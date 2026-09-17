@@ -1,0 +1,3615 @@
+--[[ ============================================================================
+
+    EGGS ESP MENU v2.6  --  Rare Egg Hunter + rebuilt interface
+    Original by ThiAez  |  English translation + full inline documentation
+
+    ----------------------------------------------------------------------------
+    READ ME FIRST
+    ----------------------------------------------------------------------------
+    This single file is BOTH the working script AND its documentation.
+    Every section below starts with a comment block that explains:
+        WHAT  the code does
+        WHY   it is written that way
+        LEARN which Roblox/Lua concept you are looking at
+
+    Comments never affect execution, so you can paste this whole file into an
+    executor exactly like the original and it behaves identically.
+    Lines tagged "v2.4:" mark a behaviour change from the previous version and
+    say what was wrong before. Appendix A lists all of them in one place.
+
+    ----------------------------------------------------------------------------
+    WHAT IS NEW IN v2.6  --  THE INTERFACE, AND SCREEN ALERTS
+    ----------------------------------------------------------------------------
+    THE MENU WAS REBUILT. Every previous version positioned each widget at a
+    hard-coded pixel offset, written out twice -- once for PC and once for
+    Mobile. That is why the egg list ran off the bottom of the window: the
+    offsets were tuned against one window height and nothing checked that the
+    last element still fitted.
+
+    v2.6 replaces all of it with layout objects. Rows are stacked by
+    UIListLayout, cards size themselves to their contents, the body is a
+    ScrollingFrame with AutomaticCanvasSize, and the window is clamped to the
+    camera's viewport when it opens. Content that does not fit now scrolls
+    instead of disappearing, and adding a control is one function call with no
+    numbers to re-derive. setPCMode and setMobileMode are gone; the device choice
+    now only picks a size and a UIScale.
+
+    The look changed with it: dark cards, real switches instead of ON/OFF text
+    buttons, a segmented control for the movement mode, and one Theme table
+    holding every colour and spacing value.
+
+    SCREEN ALERTS. The Rare Egg Hunter can sit idle for a long time, and a
+    status line in the corner of a menu is no use when you are not looking at it.
+    So the alert takes the whole screen:
+
+        hunter armed        -> one short purple splash
+        Blackhole found     -> black / purple blink, 2.5 seconds
+        Cherub found        -> white / yellow blink, 2.5 seconds
+        anything else rare  -> Config.DefaultFXColors
+
+    The overlay is a non-interactive Frame in its own high-DisplayOrder
+    ScreenGui, so it draws over the game's UI without ever costing you a tap.
+    The "Screen alerts" switch in the Automation card turns it off, and colours,
+    durations and the blink rate are all in Config.
+
+    ----------------------------------------------------------------------------
+    WHAT IS NEW IN v2.5  --  THE RARE EGG HUNTER
+    ----------------------------------------------------------------------------
+    A fourth button: "Rare Egg Hunter". It does one job and does it patiently.
+
+        watch the egg folder for a rare spawn (Blackhole / Cherub by default)
+        the instant one appears -> noclip-fly to it and collect it
+        then fly to a point NEAR your plot and STOP SHORT of it
+        hold there until the whole cycle is old enough to be safe
+        only then fly the last stretch in
+
+    ALWAYS FLIES, NEVER TELEPORTS. Every other button in this menu obeys the
+    AutoFarm / Teleport switch. This one ignores it completely and always uses
+    the noclip flight, in both directions, including the final entry onto the
+    plot. An instant CFrame jump is the one movement the server can recognise
+    with no ambiguity at all, and the whole point of this button is to not be
+    recognised. The switch stays where it is for every other feature.
+
+    WHY THE HOLD. Doing the full loop -- leave, grab a rare egg, and be back on
+    your plot -- inside about 10-15 seconds is the pattern that gets flagged. No
+    legitimate player crosses the map and returns that fast. The hunter therefore
+    times the cycle from the moment it leaves, and if the whole trip would land
+    inside that window it waits out the difference OUTSIDE the plot, where
+    standing still is unremarkable, before covering the last stretch.
+
+    Config.SafeCycleMin (16s) is the floor it waits for, Config.SafeCycleMax
+    (19s) is the ceiling it warns you about if a slow server pushed the cycle
+    past it. Both are in Section 2 -- tune them if the game's own threshold
+    turns out to be different from 10-15s.
+
+    ----------------------------------------------------------------------------
+    WHAT CHANGED IN v2.4  --  WHY FARMING USED TO BE INCONSISTENT
+    ----------------------------------------------------------------------------
+    v2.3 flew to an egg and then *assumed* the pickup worked. Five separate
+    things made that assumption wrong on a regular basis. All five are fixed
+    here, and each fix is commented at the line it lives on.
+
+      1. MOMENTUM. Flying was done by writing root.CFrame every frame, which
+         builds up a large physics velocity. The moment noclip was switched off
+         the character was launched off the egg -- often before the E hold had
+         finished. Fix: velocity is zeroed every frame and on arrival.
+
+      2. NOTHING HELD YOU IN PLACE. During the 2-3 second E hold, gravity simply
+         pulled the character off the egg, so the prompt went out of range and
+         the collect silently failed. Fix: pinRoot() re-writes the CFrame every
+         frame for the whole interaction.
+
+      3. NO VERIFICATION. The egg was marked "processed" whether or not it was
+         ever collected, so a failed pickup was never retried -- it was skipped
+         forever. Fix: collectEgg() waits for the egg to actually despawn and
+         retries before giving up.
+
+      4. KEYSTROKE-ONLY INTERACTION. A synthesised E press can be dropped, and
+         it depends on the prompt's HoldDuration. Fix: fire the ProximityPrompt
+         directly when the executor supports it, with the key hold as fallback.
+
+      5. FARM ORDER BY NAME. v2.3 collected alphabetically, which sent you
+         criss-crossing the map; long flights time out far more often. Fix:
+         nearest-first ordering.
+
+    Also fixed: stuck-flight detection, stale destination (the egg's position is
+    re-read every frame), a permanently-frozen character if a farm loop was
+    cancelled mid-interaction, state left stale after dying mid-flight, list
+    distances that never updated, a hover animation that drifted, the list
+    rebuilding many times per second, and the autoFarmProcessed memory leak.
+
+    ----------------------------------------------------------------------------
+    WHAT THIS SCRIPT IS
+    ----------------------------------------------------------------------------
+    A client-side cheat menu for the Roblox game "Ride A Pet". It builds its own
+    GUI inside your PlayerGui and does three things:
+
+        1. ESP        Makes eggs glow through walls, with name + live distance.
+        2. MOVEMENT   Puts your character on top of an egg, either by flying
+                      (noclip) or by instant teleport.
+        3. AUTOMATION Loops "go to egg -> hold E -> go home" by itself, in
+                      three flavours: a name-queued farm, a single-target farm,
+                      and the rare-egg hunter that paces itself (Section 16B).
+
+    Everything happens on YOUR client. The script does not politely ask the
+    server to move you; it writes HumanoidRootPart.CFrame directly and fakes
+    key presses with VirtualInputManager.
+
+    ----------------------------------------------------------------------------
+    HOW TO USE
+    ----------------------------------------------------------------------------
+    Run it -> a "Choose Device" box appears -> pick PC or Mobile.
+    The main window then opens with:
+
+        AutoFarm Mode / Teleport Mode   how movement is performed
+        ESP All: OFF                    yellow highlight on every egg
+        ESP: all eggs                   yellow highlight + live distance
+        Auto Best Egg                   endlessly farms Config.BestEggName
+        Rare Egg Hunter                 waits for a Blackhole / Cherub egg,
+                                        grabs it, then paces the trip home so
+                                        the round trip is never suspiciously
+                                        fast. Always flies -- this one switch
+                                        ignores the movement mode on purpose.
+        Screen alerts                   flash the screen when a rare egg is
+                                        found, colour-coded per egg type
+        Teleport to my plot             go home, obeying the movement mode
+        TP Home key: [T]                click, then press any key to rebind
+        Show Egg List                   the scrolling list of every egg
+
+    Each list row is:  [icon] [name] [distance] [TP] [AutoFarm] [ESP]
+
+    ----------------------------------------------------------------------------
+    THE DATA MODEL  --  understand this and the rest of the file follows
+    ----------------------------------------------------------------------------
+    The whole program state lives in three tables:
+
+      TABLE               KEYED BY          MEANING
+      -----------------   ---------------   -------------------------------------
+      eggData             egg Instance      its Highlight + BillboardGui, and
+                                            whether its green ESP is toggled on
+      autoFarmEggs        egg NAME string   this egg TYPE is queued for farming
+      autoFarmProcessed   egg Instance      already collected -> skip this object
+
+    The Instance / Name split is deliberate:
+      * Queue by NAME so eggs that respawn later, as brand new objects of the
+        same type, keep getting farmed.
+      * Skip-list by INSTANCE so the loop does not re-target the exact object it
+        just collected while the server is still despawning it.
+
+    ----------------------------------------------------------------------------
+    PROGRAM FLOW AT A GLANCE
+    ----------------------------------------------------------------------------
+      startup
+        -> grab services, read Config, find Workspace.RenderedEggs
+        -> define ESP system, movement system, automation loops
+        -> build the GUI
+        -> connect ChildAdded / ChildRemoved so new eggs join the ESP and list
+        -> start one background loop that refreshes distance text 5x per second
+        -> wait for the user to pick PC or Mobile, then show the window
+
+    ----------------------------------------------------------------------------
+    WARNING
+    ----------------------------------------------------------------------------
+    Automating gameplay and disabling collisions violates the Roblox Terms of
+    Service. Running this can get the account banned. The documentation here is
+    for understanding how the code works.
+
+============================================================================ ]]
+
+
+--[[ ============================================================================
+    SECTION 1  --  SERVICES
+    ----------------------------------------------------------------------------
+    WHAT  Caches every Roblox service the script uses.
+    WHY   game:GetService() is a function call. Doing it once at the top and
+          storing the result in a local is faster than calling it repeatedly,
+          and locals are faster than globals in Lua.
+    LEARN What each service is for:
+            Players             -> reaching LocalPlayer
+            TweenService        -> smooth animations of GUI properties
+            RunService          -> per-frame loop (Heartbeat) for the fly code
+            UserInputService    -> keyboard / mouse / touch events
+            VirtualInputManager -> FAKE key presses (exploit-only capability)
+            Workspace           -> the 3D world, where eggs and plots live
+============================================================================ ]]
+local Players              = game:GetService("Players")
+local TweenService         = game:GetService("TweenService")
+local RunService           = game:GetService("RunService")
+local UserInputService     = game:GetService("UserInputService")
+local VirtualInputManager  = game:GetService("VirtualInputManager")
+local Workspace            = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+
+
+--[[ ============================================================================
+    SECTION 2  --  CONFIGURATION
+    ----------------------------------------------------------------------------
+    WHAT  Every tunable number in the entire script, in one table.
+    WHY   This is the single most useful habit in this file. When all the magic
+          numbers live in one place, changing behaviour never means hunting
+          through logic. Want a different farm target? Change BestEggName.
+          Want slower, safer flying? Change MovementSpeed.
+    LEARN A plain Lua table used as a settings object. Read it anywhere with
+          Config.FieldName.
+============================================================================ ]]
+local Config = {
+    -- ESP appearance -------------------------------------------------------
+    ESPFillTransparency    = 0.50,  -- 0 = solid coloured fill, 1 = invisible
+    ESPOutlineTransparency = 0,     -- 0 = fully visible outline
+    ESPNameSize            = 13,    -- font size of the egg name text
+    ESPDistanceSize        = 11,    -- font size of the distance text
+
+    -- Colours --------------------------------------------------------------
+    GlobalESPColor = Color3.fromRGB(255, 255, 0),  -- yellow: the "ESP All" button
+    CustomESPColor = Color3.fromRGB(0, 255, 0),    -- green: per-egg ESP button
+
+    -- Movement / teleport --------------------------------------------------
+    TPHeight      = 3,    -- studs ABOVE the target we land on, so we do not
+                          -- spawn inside the egg's geometry
+    MovementSpeed = 500,  -- studs per second while flying in AutoFarm mode
+                          -- NOTE: ~30x normal walk speed. This is the single
+                          -- loudest anticheat signal in the whole script.
+    ArrivalRadius = 3,    -- studs; closer than this counts as "arrived".
+                          -- v2.3 used 2, which at 500 studs/s is smaller than
+                          -- one frame's step at low FPS -- the loop could skip
+                          -- past the target and keep circling until timeout.
+    StuckTimeout  = 1.5,  -- seconds of "not getting any closer" before the
+                          -- flight is abandoned. v2.3 only had the total
+                          -- timeout, so every blocked path cost the full budget.
+
+    -- Automation -----------------------------------------------------------
+    BestEggName      = "cherub", -- substring matched against egg names, case-insensitive
+    AutoEggHoldTime  = 3,        -- seconds to hold E during "Auto Best Egg"
+    AutoFarmHoldTime = 2,        -- seconds to hold E during AutoFarm
+    AutoEggDelay     = 0.8,      -- pause between Auto Best Egg cycles
+
+    -- Reliability (all new in v2.4) ----------------------------------------
+    InteractRetries    = 2,     -- extra attempts per egg before moving on.
+                                -- Attempt 1 uses the ProximityPrompt if one is
+                                -- available; retries always use the E hold, so
+                                -- a game that ignores one path still works.
+    CollectConfirmTime = 1.5,   -- seconds to wait for the egg to despawn before
+                                -- calling the attempt failed. This is the check
+                                -- v2.3 never did.
+    UseProximityPrompt = true,  -- prefer fireproximityprompt when the executor
+                                -- exposes it. Set false to force the key path.
+    PinMaxTime         = 10,    -- hard ceiling on how long the character can be
+                                -- pinned in place. Safety valve: without it a
+                                -- crashed interaction would freeze you forever.
+    IdlePassDelay      = 0.5,   -- pause between passes when every queued egg is
+                                -- currently despawned.
+    MaxIdlePasses      = 24,    -- give up after this many empty passes (~12s).
+                                -- v2.3 stopped on the FIRST empty pass, which is
+                                -- why AutoFarm often quit seconds after starting
+                                -- while eggs were merely respawning.
+
+    -- Rare Egg Hunter (new in v2.5) ----------------------------------------
+    RareEggNames = { "blackhole", "cherub" },
+                                -- Substring matched against egg names,
+                                -- case-insensitive, same rule as BestEggName.
+                                -- Add or remove entries freely; the hunter takes
+                                -- whichever listed egg is nearest.
+    RareEggHoldTime  = 3,       -- seconds to hold E on a rare egg
+    RareScanDelay    = 0.25,    -- how often to look for a rare spawn. Polling
+                                -- beats listening to ChildAdded here: the event
+                                -- fires before the model has finished streaming
+                                -- in, so its pivot is not trustworthy yet.
+
+    -- The safety window. The game flags a leave-grab-return cycle completed in
+    -- roughly 10-15 seconds, so the hunter stretches every cycle past that and
+    -- waits OUTSIDE the plot to do it.
+    SafeCycleMin     = 16,      -- do not enter the plot before this many seconds
+                                -- have passed since the cycle started
+    SafeCycleMax     = 19,      -- if a cycle takes longer than this, say so --
+                                -- it means the flight or the server was slow,
+                                -- not that anything is wrong
+    PlotHoldDistance = 45,      -- studs to stop short of the plot while waiting
+    PlotHoldHeight   = 6,       -- studs above the plot's pivot to hold at.
+                                -- Deliberately low: hovering fifteen studs up
+                                -- for fifteen seconds is its own tell. High
+                                -- enough to clear the plot's fence and props,
+                                -- low enough to read as standing there.
+
+    -- Screen alerts (new in v2.6) ------------------------------------------
+    ScreenFXEnabled = true,     -- master switch; also toggled from the menu
+    SplashTime      = 0.6,      -- seconds for the one-shot "armed" splash
+    BlinkDuration   = 2.5,      -- seconds the found-a-rare-egg blink runs for
+    BlinkInterval   = 0.18,     -- seconds per colour. Lower = more frantic.
+    BlinkPeak       = 0.35,     -- lowest BackgroundTransparency reached, so 0.35
+                                -- means the screen is 65% covered at the peak
+                                -- of each pulse. Raise it for a subtler alert.
+
+    -- Colour pairs, matched against the egg's name in order. First hit wins.
+    RareEggFX = {
+        { match = "blackhole", a = Color3.fromRGB(  0,   0,   0),
+                               b = Color3.fromRGB(150,   0, 255) },
+        { match = "cherub",    a = Color3.fromRGB(255, 255, 255),
+                               b = Color3.fromRGB(255, 220,  60) },
+    },
+    DefaultFXColors = {
+        a = Color3.fromRGB(255, 255, 255),
+        b = Color3.fromRGB( 88, 166, 255),
+    },
+
+    -- Refresh rates --------------------------------------------------------
+    ListRefreshRate     = 0.20, -- how often billboards and list rows re-measure
+    ListRebuildDebounce = 0.25, -- min seconds between full list rebuilds
+
+    -- User interface -------------------------------------------------------
+    -- Preferred window size. v2.6 clamps both against the camera's viewport at
+    -- build time, so these are a maximum rather than a promise -- the menu can
+    -- no longer open partly off the edge of a small screen.
+    PCWidth       = 380,
+    PCHeight      = 600,
+    MobileWidth   = 320,
+    MobileHeight  = 470,
+    AnimationTime = 0.18,  -- default tween duration in seconds
+}
+
+
+--[[ ============================================================================
+    SECTION 3  --  WORLD OBJECTS
+    ----------------------------------------------------------------------------
+    WHAT  Finds the two containers the script depends on.
+    WHY   WaitForChild yields until the object replicates from the server. The
+          second argument is a TIMEOUT in seconds: if RenderedEggs never shows
+          up, WaitForChild returns nil after 10s instead of hanging forever.
+          That is why the GUI can still open on a map where the folder is
+          missing -- every function that touches the folder checks for nil first.
+    LEARN WaitForChild(name)      -> waits forever
+          WaitForChild(name, 10)  -> waits 10s, then returns nil
+          FindFirstChild(name)    -> never waits, returns nil immediately
+============================================================================ ]]
+local TargetParent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Every egg currently spawned in the world lives inside this folder.
+local RenderedEggsFolder = Workspace:WaitForChild("RenderedEggs", 10)
+if not RenderedEggsFolder then
+    warn("[Eggs ESP v2.6] Workspace.RenderedEggs not found. The GUI will still open.")
+end
+
+
+--[[ ============================================================================
+    SECTION 4  --  STATE
+    ----------------------------------------------------------------------------
+    WHAT  Every variable that changes while the script runs.
+    WHY   They are declared here, at the top, because functions defined LATER
+          need to read and write them. In Lua a local is only visible to code
+          written after it, so anything shared has to be declared first.
+    LEARN "Forward declaration": StopAutoFarmBtn and StatusLabel are declared
+          empty here and assigned real GUI objects much further down. That lets
+          the automation code (written above the GUI) still refer to them.
+============================================================================ ]]
+local mainESPActive       = false   -- is the global yellow ESP switched on?
+local autoBestEggActive   = false   -- is the Auto Best Egg loop running?
+local autoBestEggThread   = nil     -- the coroutine handle, so we can cancel it
+local autoFarmActive      = false   -- is the AutoFarm loop running?
+local autoFarmThread      = nil     -- its coroutine handle
+local autoFarmEggs        = {}      -- [eggName]     = true -> queued for farming
+local autoFarmProcessed   = {}      -- [eggInstance] = true -> already collected
+local autoFarmCurrentName = nil     -- name of the egg being collected right now
+
+local autoRareActive      = false   -- is the Rare Egg Hunter running?
+local autoRareThread      = nil     -- its coroutine handle
+
+local StopAutoFarmBtn               -- assigned in the GUI section
+local StatusLabel                   -- assigned in the GUI section
+-- v2.6: these are switch HANDLES, not raw buttons. Each exposes set(active)
+-- and get(), so the three places that can flip a mode -- the user, another mode
+-- starting, and a loop finishing on its own -- all repaint through one path.
+local AutoBestEggToggle             -- assigned in the GUI section
+local AutoRareToggle                -- assigned in the GUI section
+
+-- Screen alerts. screenFXEnabled is the live flag; ScreenFX is filled in by the
+-- GUI section with armed() / found(eggName) / stop(). The automation code calls
+-- them through this table so it never depends on the menu having been built.
+local screenFXEnabled = Config.ScreenFXEnabled
+local ScreenFX        = {}
+
+-- Forward declarations. The three automation modes are mutually exclusive, and
+-- each one's start function has to be able to stop the other two -- but they are
+-- defined in file order, so the later ones are not visible to the earlier ones
+-- yet. Declaring the names here and assigning them with "function name()" rather
+-- than "local function name()" further down solves that without reordering the
+-- whole file.
+local stopAutoFarm
+local stopAutoRare
+
+local currentSearchQuery = ""             -- text typed into the search box
+local sortMode           = "Name"         -- "Name" or "Distance"
+local tpKeybind          = Enum.KeyCode.T -- key that triggers TP Home
+local listeningForKey    = false          -- true while waiting for a rebind press
+local isMobileMode       = false          -- which layout was chosen
+local isMinimized        = false          -- is the window collapsed to its title bar?
+
+local movementMode       = "AutoFarm" -- "AutoFarm" = fly + noclip, "Teleport" = instant
+local movementActive     = false      -- true while a flight is in progress (acts as a lock)
+local movementHumanoid   = nil        -- humanoid being flown, so stopMovement can fix it
+local movementPartsState = nil        -- snapshot of CanCollide values taken before noclip
+local movementAutoRotate = nil        -- the humanoid's ORIGINAL AutoRotate value.
+                                      -- v2.3's stopMovement forced it back to
+                                      -- true, which is wrong for any character
+                                      -- that legitimately had it off.
+local pinToken           = 0          -- generation counter for pinRoot. Bumping
+                                      -- it kills whatever pin loop is running,
+                                      -- so a cancelled coroutine can never leave
+                                      -- the character frozen in mid-air.
+local ModeAutoFarmBtn                 -- assigned in the GUI section
+local ModeTeleportBtn                 -- assigned in the GUI section
+
+-- Per-egg bookkeeping. One entry per egg Instance:
+--   eggData[Egg] = {
+--       Highlight     = Highlight instance   (the glow)
+--       NameBillboard = BillboardGui instance (name + distance floating above)
+--       CustomActive  = true/false            (green per-egg ESP toggled on?)
+--       CustomColor   = Color3
+--   }
+local eggData = {}
+
+-- [eggInstance] = the TextLabel showing its distance in the scroll list. Lets
+-- the refresh loop keep list rows live; in v2.3 they froze at build time.
+local listDistanceLabels = {}
+
+
+--[[ ============================================================================
+    SECTION 5  --  SMALL HELPERS
+    ----------------------------------------------------------------------------
+    WHAT  Two one-line lookups used constantly.
+    WHY   LocalPlayer.Character is nil while you are dead or respawning, and
+          HumanoidRootPart may not exist yet even when Character does. Wrapping
+          both in functions that return nil means every caller can simply write
+          "if not root then return end" instead of repeating the nil checks.
+    LEARN HumanoidRootPart is the invisible part at the centre of a character.
+          Moving it moves the whole character -- that is the basis of every
+          teleport and fly hack.
+============================================================================ ]]
+local function getCharacter()
+    return LocalPlayer.Character
+end
+
+local function getRootPart()
+    local character = getCharacter()
+    if not character then
+        return nil
+    end
+    return character:FindFirstChild("HumanoidRootPart")
+end
+
+-- Writes to the status line only if the GUI has been built yet. v2.3 wrote
+-- StatusLabel.Text directly from inside the AutoFarm coroutine; if the label was
+-- ever missing that threw, and a thrown error inside task.spawn kills the whole
+-- farming loop silently -- it just stops, with no message.
+local function setStatus(text, color)
+    if not StatusLabel then
+        return
+    end
+    StatusLabel.Text       = text
+    StatusLabel.TextColor3 = color or Color3.fromRGB(0, 255, 120)
+end
+
+-- The toggle buttons are repainted through these rather than inside their own
+-- click handlers, because a mode can now also be switched off by ANOTHER mode
+-- starting. A button that still says "ON" for a loop that was stopped behind its
+-- back is the kind of small lie that makes a menu untrustworthy.
+local function setAutoBestEggButton(active)
+    if AutoBestEggToggle then AutoBestEggToggle.set(active) end
+end
+
+local function setAutoRareButton(active)
+    if AutoRareToggle then AutoRareToggle.set(active) end
+end
+
+
+--[[ ============================================================================
+    SECTION 6  --  EGG ICON LOOKUP
+    ----------------------------------------------------------------------------
+    WHAT  Finds the game's own thumbnail image for an egg, by name.
+    WHY   Rather than hard-coding asset IDs that break on every game update,
+          this reads the game's existing inventory UI and reuses whatever image
+          the game itself is already showing. Free, always up to date.
+    LEARN The chained "local x = a and a:FindFirstChild(...)" pattern. In Lua,
+          "and" short-circuits: if "main" is nil the FindFirstChild is never
+          called, so the chain cannot error out at any level. Returning ""
+          rather than nil matters because ImageLabel.Image expects a string.
+
+    PATH  PlayerGui > Main > Index > Holders > EggsHolder > <eggName> > ImageLabel
+============================================================================ ]]
+local function getEggImage(eggName)
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then
+        return ""
+    end
+
+    local main       = playerGui:FindFirstChild("Main")
+    local index      = main and main:FindFirstChild("Index")
+    local holders    = index and index:FindFirstChild("Holders")
+    local eggsHolder = holders and holders:FindFirstChild("EggsHolder")
+    if not eggsHolder then
+        return ""
+    end
+
+    local eggFrame = eggsHolder:FindFirstChild(eggName)
+    if not eggFrame then
+        return ""
+    end
+
+    local imageLabel = eggFrame:FindFirstChild("ImageLabel")
+    if imageLabel and imageLabel:IsA("ImageLabel") then
+        return imageLabel.Image or ""
+    end
+
+    return ""
+end
+
+
+--[[ ============================================================================
+    SECTION 7  --  GEOMETRY HELPERS
+    ----------------------------------------------------------------------------
+    WHAT  Position / distance maths that works for BOTH Models and single Parts.
+    WHY   An egg in this game might be a Model (several parts grouped) or a bare
+          BasePart. Those expose their position differently, so one helper
+          normalises them and the other ~15 call sites never have to care.
+    LEARN CFrame = position AND rotation in one value.
+          Model:GetPivot()  -> the model's CFrame
+          BasePart.CFrame   -> the part's CFrame
+          Vector3 subtraction gives an offset; .Magnitude turns it into a
+          scalar distance in studs.
+
+          Returning math.huge (infinity) on failure instead of nil is a nice
+          trick: math.huge still compares correctly with "<", so the sort
+          function later cannot crash on a missing egg -- unreachable eggs just
+          sink to the bottom of the list.
+============================================================================ ]]
+local function getTargetCFrame(target)
+    if not target or not target.Parent then
+        return nil
+    end
+    if target:IsA("Model") then
+        return target:GetPivot()
+    end
+    if target:IsA("BasePart") then
+        return target.CFrame
+    end
+    return nil
+end
+
+local function getTargetPosition(target)
+    local targetCFrame = getTargetCFrame(target)
+    if not targetCFrame then
+        return nil
+    end
+    return targetCFrame.Position
+end
+
+local function getDistanceToTarget(target)
+    local root           = getRootPart()
+    local targetPosition = getTargetPosition(target)
+    if not root or not targetPosition then
+        return math.huge
+    end
+    return (root.Position - targetPosition).Magnitude
+end
+
+-- "Still a real egg, still inside the folder." Checking Parent == the folder
+-- (rather than just "not nil") also rejects eggs that were reparented away.
+-- Defined here in v2.4 rather than down in the AutoFarm section, because the
+-- targeting helpers above the GUI now use it too.
+local function isValidEgg(egg)
+    return egg
+        and egg.Parent == RenderedEggsFolder
+        and (egg:IsA("Model") or egg:IsA("BasePart"))
+end
+
+
+--[[ ============================================================================
+    SECTION 8  --  TWEEN HELPER
+    ----------------------------------------------------------------------------
+    WHAT  One-liner that smoothly animates any GUI property.
+    WHY   Raw TweenService is three lines every time (build TweenInfo, Create,
+          Play). This wraps it, supplies a house style (Quart easing, Out
+          direction), and guards against animating an object that was already
+          destroyed.
+    LEARN tween(button, {BackgroundTransparency = 0.1}, 0.2)
+          -> over 0.2 seconds, glide BackgroundTransparency to 0.1.
+          Easing "Out" means it starts fast and settles gently, which is what
+          makes UI feel responsive rather than floaty.
+============================================================================ ]]
+local function tween(object, properties, duration)
+    if not object or not object.Parent then
+        return
+    end
+    local info = TweenInfo.new(
+        duration or Config.AnimationTime,
+        Enum.EasingStyle.Quart,
+        Enum.EasingDirection.Out
+    )
+    TweenService:Create(object, info, properties):Play()
+end
+
+
+--[[ ============================================================================
+    SECTION 9  --  ESP, PART 1: THE FLOATING LABEL
+    ----------------------------------------------------------------------------
+    WHAT  Builds the "name + distance" text that hovers over an egg.
+    WHY   A BillboardGui is a 2D GUI attached to a 3D object that always turns
+          to face the camera. Two properties do the heavy lifting:
+            AlwaysOnTop = true  -> draws THROUGH walls (this is the "wallhack")
+            MaxDistance = 2000  -> stops rendering past 2000 studs, for framerate
+          It is created Enabled = false and switched on later by updateEggESP,
+          because creating instances is expensive and toggling .Enabled is not.
+    LEARN StudsOffset = Vector3.new(0, 3.5, 0) lifts the label 3.5 studs above
+          the egg so it does not overlap the model.
+============================================================================ ]]
+local function createEggLabel(egg)
+    local data = eggData[egg]
+    if not data then
+        return
+    end
+    -- Already built and still alive? Nothing to do. This guard is what makes the
+    -- function safe to call every single time the ESP refreshes.
+    if data.NameBillboard and data.NameBillboard.Parent then
+        return
+    end
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name        = "EggESP_Info"
+    billboard.Size        = UDim2.new(0, 180, 0, 45)
+    billboard.StudsOffset = Vector3.new(0, 3.5, 0)  -- float above the egg
+    billboard.AlwaysOnTop = true                    -- draw through walls
+    billboard.MaxDistance = 2000
+    billboard.Enabled     = false                   -- switched on by updateEggESP
+    billboard.Parent      = egg
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name                   = "EggName"
+    nameLabel.Size                   = UDim2.new(1, 0, 0, 23)
+    nameLabel.BackgroundTransparency = 1     -- text only, no box behind it
+    nameLabel.Text                   = egg.Name
+    nameLabel.TextColor3             = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextStrokeTransparency = 0.35  -- dark outline keeps it readable
+                                             -- against a bright sky
+    nameLabel.TextSize               = Config.ESPNameSize
+    nameLabel.Font                   = Enum.Font.SourceSansBold
+    nameLabel.Parent                 = billboard
+
+    local distanceLabel = Instance.new("TextLabel")
+    distanceLabel.Name                   = "Distance"
+    distanceLabel.Size                   = UDim2.new(1, 0, 0, 18)
+    distanceLabel.Position               = UDim2.new(0, 0, 0, 22)  -- under the name
+    distanceLabel.BackgroundTransparency = 1
+    distanceLabel.Text                   = "0 studs"
+    distanceLabel.TextColor3             = Color3.fromRGB(210, 210, 210)
+    distanceLabel.TextStrokeTransparency = 0.4
+    distanceLabel.TextSize               = Config.ESPDistanceSize
+    distanceLabel.Font                   = Enum.Font.SourceSans
+    distanceLabel.Parent                 = billboard
+
+    data.NameBillboard = billboard
+end
+
+
+--[[ ----------------------------------------------------------------------------
+    ESP, PART 2: REFRESHING ONE LABEL'S TEXT
+    ----------------------------------------------------------------------------
+    WHAT  Rewrites the name and distance strings of an existing billboard.
+    WHY   Distance changes as you move, so this is called about 5 times per
+          second by the background loop at the bottom of the file. It does the
+          minimum possible work: no instance creation, just two string writes.
+    LEARN math.floor(d + 0.5) is rounding to the nearest integer. string.format
+          with "%d" then prints it without a decimal point.
+---------------------------------------------------------------------------- ]]
+local function updateEggLabel(egg)
+    local data = eggData[egg]
+    if not data or not data.NameBillboard then
+        return
+    end
+
+    local billboard = data.NameBillboard
+    if not billboard.Parent then
+        return
+    end
+
+    local nameLabel     = billboard:FindFirstChild("EggName")
+    local distanceLabel = billboard:FindFirstChild("Distance")
+
+    if nameLabel then
+        nameLabel.Text = egg.Name
+    end
+
+    if distanceLabel then
+        local distance = getDistanceToTarget(egg)
+        if distance == math.huge then
+            distanceLabel.Text = "?"   -- character is dead / egg unreachable
+        else
+            distanceLabel.Text = string.format("%d studs", math.floor(distance + 0.5))
+        end
+    end
+end
+
+
+--[[ ============================================================================
+    SECTION 10  --  ESP, PART 3: THE DECISION FUNCTION
+    ----------------------------------------------------------------------------
+    WHAT  The heart of the ESP system. For ONE egg it answers: should this glow,
+          and in what colour? Then it creates / enables / disables the visuals.
+    WHY   Every other ESP function funnels into this one, so the priority rule
+          lives in exactly one place:
+
+              green per-egg ESP   BEATS
+              yellow global ESP   BEATS
+              off
+
+    LEARN Two patterns worth stealing:
+
+          1. LAZY INITIALISATION. If eggData[egg] does not exist yet, it is
+             created on the spot. That means no separate "register this egg"
+             step is ever needed -- just call updateEggESP on anything.
+
+          2. CREATE ONCE, TOGGLE FOREVER. The Highlight is never destroyed when
+             the ESP is turned off; only .Enabled flips to false. Instance
+             creation is expensive; setting a boolean is nearly free. Turning
+             ESP on and off repeatedly therefore costs almost nothing.
+
+          Highlight is a modern Roblox object that outlines and tints a model
+          even through geometry. Before it existed, people faked this with
+          SelectionBox or BoxHandleAdornment.
+============================================================================ ]]
+local function updateEggESP(egg)
+    if not egg then
+        return
+    end
+    if not egg:IsA("Model") and not egg:IsA("BasePart") then
+        return
+    end
+
+    -- Lazily create the record for this egg (see LEARN note 1 above).
+    if not eggData[egg] then
+        eggData[egg] = {
+            Highlight     = nil,
+            NameBillboard = nil,
+            CustomColor   = Config.CustomESPColor,
+            CustomActive  = false
+        }
+    end
+
+    local data       = eggData[egg]
+    local shouldShow = false
+    local color      = Config.GlobalESPColor
+
+    -- The priority rule. Individual ESP wins over the global one.
+    if data.CustomActive then
+        shouldShow = true
+        color      = data.CustomColor or Config.CustomESPColor
+    elseif mainESPActive then
+        shouldShow = true
+        color      = Config.GlobalESPColor
+    end
+
+    if shouldShow then
+        -- Build the Highlight only once per egg (or if something destroyed it).
+        if not data.Highlight or not data.Highlight.Parent then
+            local highlight = Instance.new("Highlight")
+            highlight.Name                = "EggESP_Highlight"
+            highlight.Adornee             = egg  -- which object to outline
+            highlight.FillTransparency    = Config.ESPFillTransparency
+            highlight.OutlineTransparency = Config.ESPOutlineTransparency
+            highlight.Parent              = egg
+            data.Highlight = highlight
+        end
+
+        data.Highlight.FillColor    = color
+        data.Highlight.OutlineColor = color
+        data.Highlight.Enabled      = true
+
+        createEggLabel(egg)
+        if data.NameBillboard then
+            data.NameBillboard.Enabled = true
+        end
+        updateEggLabel(egg)
+    else
+        -- See LEARN note 2: disable, never destroy.
+        if data.Highlight then
+            data.Highlight.Enabled = false
+        end
+        if data.NameBillboard then
+            data.NameBillboard.Enabled = false
+        end
+    end
+end
+
+
+--[[ ----------------------------------------------------------------------------
+    ESP, PART 4: BULK OPERATIONS
+    ----------------------------------------------------------------------------
+    WHAT  Apply the decision function to every egg at once.
+    WHY   applyGlobalESP is what the "ESP All" button calls: flip the flag, then
+          let updateEggESP re-derive the correct visual state for each egg. The
+          button never touches Highlights directly -- one source of truth.
+---------------------------------------------------------------------------- ]]
+local function updateAllESP()
+    if not RenderedEggsFolder then
+        return
+    end
+    for _, egg in ipairs(RenderedEggsFolder:GetChildren()) do
+        updateEggESP(egg)
+    end
+end
+
+local function applyGlobalESP(state)
+    mainESPActive = state
+    updateAllESP()
+end
+
+
+--[[ ----------------------------------------------------------------------------
+    ESP, PART 5: CLEAN UP A DESPAWNED EGG
+    ----------------------------------------------------------------------------
+    WHAT  Destroys an egg's visuals and forgets it.
+    WHY   Called from the ChildRemoved event. Setting eggData[egg] = nil removes
+          the last reference the script holds, which lets Lua's garbage collector
+          reclaim the memory. Without this the table would grow forever on a
+          busy server.
+    v2.4: also clears autoFarmProcessed[egg] and listDistanceLabels[egg]. v2.3
+          only cleared eggData, so those two tables grew for the whole session
+          -- one entry per egg that ever spawned.
+---------------------------------------------------------------------------- ]]
+local function removeEggData(egg)
+    local data = eggData[egg]
+    if not data then
+        return
+    end
+    if data.Highlight then
+        data.Highlight:Destroy()
+    end
+    if data.NameBillboard then
+        data.NameBillboard:Destroy()
+    end
+    eggData[egg] = nil
+    -- v2.3 left these two behind, so both tables grew for the whole session.
+    autoFarmProcessed[egg]   = nil
+    listDistanceLabels[egg]  = nil
+end
+
+
+--[[ ============================================================================
+    SECTION 11  --  MOVEMENT, PART 1: INSTANT TELEPORT
+    ----------------------------------------------------------------------------
+    WHAT  Snaps the character on top of a target in a single frame.
+    WHY   This is the classic Roblox teleport, and it is one line of real work:
+
+              root.CFrame = targetCFrame * CFrame.new(0, TPHeight, 0)
+
+    LEARN Multiplying CFrames COMPOSES them. "targetCFrame * CFrame.new(0,3,0)"
+          means "the target's position and rotation, then move 3 studs up along
+          the target's own up-axis". The +3 offset stops you spawning inside the
+          egg's collision box and being shoved somewhere random by physics.
+
+          The reason this works at all is that Roblox lets a client own the
+          physics of its own character, so the server accepts the new position.
+          That single design fact is what all Roblox movement exploits rest on.
+============================================================================ ]]
+--[[ v2.4 ADDITION -- THE TWO FUNCTIONS THAT FIX MOST OF THE INCONSISTENCY
+
+     zeroVelocity  Writing root.CFrame every frame is not "moving", it is
+                   teleporting 8 studs at a time. Roblox's physics solver sees
+                   those jumps and hands the assembly a matching velocity. By
+                   the time the flight ends the character is carrying hundreds
+                   of studs/second of momentum, so the instant collisions come
+                   back it is flung off the egg. Writing the velocity back to
+                   zero every frame keeps the character exactly where we put it.
+
+     pinRoot       Arriving is not enough: the game wants you standing there for
+                   2-3 seconds while the prompt fills. Gravity does not care.
+                   pinRoot re-writes the CFrame every Heartbeat until you call
+                   the returned stop function, so the interaction cannot drift
+                   out of range.
+
+                   The pinToken generation counter is the safety mechanism. Each
+                   call claims the next token; the loop exits as soon as the
+                   token changes. stopMovement bumps it, so even if the farming
+                   coroutine is cancelled mid-pin (task.cancel never runs your
+                   cleanup code) the character is released. PinMaxTime is a
+                   second, independent backstop.
+]]
+local function zeroVelocity(root)
+    if not root then return end
+    -- pcall: these properties do not exist on very old Roblox builds, and some
+    -- executors sandbox them. Failing to zero velocity should never be fatal.
+    pcall(function()
+        root.AssemblyLinearVelocity  = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end)
+end
+
+-- maxTime is optional and defaults to Config.PinMaxTime. The Rare Egg Hunter
+-- passes a longer one, because it deliberately holds position for well over ten
+-- seconds while it waits out the safety window.
+local function pinRoot(cframe, maxTime)
+    pinToken += 1
+    local myToken = pinToken
+
+    task.spawn(function()
+        local deadline = os.clock() + (maxTime or Config.PinMaxTime)
+        while pinToken == myToken and os.clock() < deadline do
+            local root = getRootPart()
+            if not root then break end
+            root.CFrame = cframe
+            zeroVelocity(root)
+            RunService.Heartbeat:Wait()
+        end
+    end)
+
+    return function()
+        if pinToken == myToken then
+            pinToken += 1
+        end
+    end
+end
+
+local function teleportToModel(target)
+    local root = getRootPart()
+    if not root then return false end
+
+    local targetCFrame = getTargetCFrame(target)
+    if not targetCFrame then return false end
+
+    root.CFrame = targetCFrame * CFrame.new(0, Config.TPHeight, 0)
+    zeroVelocity(root)  -- v2.4: a teleport inherits the velocity you had before
+                        -- it, which used to slide you straight back off the egg.
+    return true
+end
+
+
+--[[ ============================================================================
+    SECTION 12  --  MOVEMENT, PART 2: NOCLIP
+    ----------------------------------------------------------------------------
+    WHAT  Turns collisions off for the whole character, and back on again.
+    WHY   Flying in a straight line to an egg means passing through walls, trees
+          and terrain. Without noclip the character would jam against the first
+          obstacle and the loop would sit there until the timeout.
+    LEARN The important idea here is the SNAPSHOT.
+
+          A naive restore does "part.CanCollide = true" for everything. That is
+          a bug: hats, accessories and some decorative parts are SUPPOSED to be
+          non-collidable, and blindly setting them true breaks the character.
+
+          This version stores each part's original value in movementPartsState
+          before changing it, then writes those exact values back. The
+          "if part and part.Parent" check handles the case where the character
+          respawned mid-flight and the old parts no longer exist.
+============================================================================ ]]
+local function setNoclip(enabled)
+    local character = getCharacter()
+    if not character then return end
+
+    if enabled then
+        movementPartsState = {}
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                movementPartsState[part] = part.CanCollide  -- remember
+                part.CanCollide = false                     -- then disable
+            end
+        end
+    elseif movementPartsState then
+        for part, oldCanCollide in pairs(movementPartsState) do
+            if part and part.Parent then part.CanCollide = oldCanCollide end
+        end
+        movementPartsState = nil
+    end
+end
+
+
+--[[ ============================================================================
+    SECTION 13  --  MOVEMENT, PART 3: THE FLY LOOP
+    ----------------------------------------------------------------------------
+    WHAT  Moves the character to a target, using whichever mode is selected.
+          Returns true ONLY if it actually arrived.
+    WHY   A teleport is instant and obvious. Flying at a fixed speed looks more
+          like a (very fast) player and gives the server a continuous stream of
+          plausible positions instead of one impossible jump.
+
+    THE CORE MATHS, line by line:
+
+          offset   = destination - root.Position   -- vector pointing at the goal
+          distance = offset.Magnitude              -- how far, in studs
+          dt       = Heartbeat:Wait()              -- seconds since last frame
+          step     = min(distance, Speed * dt)     -- how far to move THIS frame
+          root.CFrame = root.CFrame + offset.Unit * step
+
+          * offset.Unit is the direction with length 1, so multiplying it by
+            "step" gives a movement of exactly "step" studs in that direction.
+          * Multiplying by dt makes the speed frame-rate independent: at 30 FPS
+            each step is twice as big as at 60 FPS, and you arrive at the same
+            time either way.
+          * math.min(distance, ...) clamps the final step so you never overshoot
+            and oscillate around the target.
+          * "root.CFrame + vector" moves the position but KEEPS the rotation,
+            which is why AutoRotate is disabled -- otherwise the humanoid would
+            keep trying to spin the character back to face its walk direction.
+
+    THE FOUR EXIT CONDITIONS -- each one prevents a specific hang:
+
+          1. movementActive went false      -> user pressed Stop
+          2. os.clock() exceeded maxTime    -> path blocked, give up
+          3. target.Parent is nil           -> someone else collected the egg
+          4. getRootPart() ~= root          -> we died and respawned mid-flight
+
+    LEARN "movementActive" doubles as a lock. The early
+          "if movementActive then return false end" guarantees only one flight
+          can run at a time, so two automation loops cannot fight over the
+          character's position.
+============================================================================ ]]
+-- forceFly (v2.5) makes this function ignore the AutoFarm / Teleport switch and
+-- always take the noclip flight path. The Rare Egg Hunter passes it on every
+-- single move it makes: an instant CFrame jump is the least deniable thing a
+-- client can do, so the one mode built around not being noticed never uses it.
+local function moveToModel(target, forceFly)
+    -- v2.4: the lock now covers Teleport mode too. v2.3 returned before taking
+    -- it, so a manual teleport could fire in the middle of an AutoFarm flight
+    -- and both would fight over root.CFrame.
+    if movementActive then return false end
+
+    local root         = getRootPart()
+    local targetCFrame = getTargetCFrame(target)
+    if not root or not targetCFrame then return false end
+
+    if movementMode == "Teleport" and not forceFly then
+        movementActive = true
+        local ok = teleportToModel(target)
+        movementActive = false
+        return ok
+    end
+
+    local character = getCharacter()
+    local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+
+    movementActive      = true
+    movementHumanoid    = humanoid
+    local oldAutoRotate = humanoid.AutoRotate
+    movementAutoRotate  = oldAutoRotate
+    local success       = false
+    local startTime     = os.clock()
+    local startDistance = (root.Position - targetCFrame.Position).Magnitude
+    -- Expected travel time, plus 2s slack, with a 3s floor.
+    local maxTime       = math.max(3, (startDistance / Config.MovementSpeed) + 2)
+
+    -- Stuck detection. bestDistance is the closest we have ever been; if it does
+    -- not improve for StuckTimeout seconds we are wedged on something and the
+    -- remaining budget is wasted time. v2.3 always burned the full maxTime.
+    local bestDistance = math.huge
+    local lastProgress = os.clock()
+
+    setNoclip(true)
+    humanoid.AutoRotate = false
+
+    while movementActive and os.clock() - startTime <= maxTime do
+        if not target or not target.Parent then break end  -- egg got collected
+        if getRootPart() ~= root then break end            -- we respawned
+
+        -- v2.4: the destination is re-read EVERY frame. v2.3 snapshotted it once
+        -- before take-off, so any egg that moved, re-pivoted or finished
+        -- streaming in after the flight started was flown past, not to.
+        local liveCFrame = getTargetCFrame(target)
+        if not liveCFrame then break end
+
+        local destination = liveCFrame.Position + Vector3.new(0, Config.TPHeight, 0)
+        local offset      = destination - root.Position
+        local distance    = offset.Magnitude
+
+        if distance <= Config.ArrivalRadius then
+            root.CFrame = liveCFrame * CFrame.new(0, Config.TPHeight, 0)
+            zeroVelocity(root)
+            success = true
+            break
+        end
+
+        if distance < bestDistance - 0.5 then
+            bestDistance = distance
+            lastProgress = os.clock()
+        elseif os.clock() - lastProgress > Config.StuckTimeout then
+            break
+        end
+
+        -- Frame-rate independent step, clamped so we never overshoot.
+        local dt   = RunService.Heartbeat:Wait()
+        local step = math.min(distance, Config.MovementSpeed * dt)
+        root.CFrame = root.CFrame + offset.Unit * step
+        zeroVelocity(root)  -- the single most important line in this loop
+    end
+
+    -- Always restore, whichever exit we took.
+    movementActive = false
+    if humanoid.Parent then humanoid.AutoRotate = oldAutoRotate end
+    movementHumanoid   = nil
+    movementAutoRotate = nil
+    setNoclip(false)
+    zeroVelocity(getRootPart())  -- drop whatever momentum the last frame added
+    return success
+end
+
+
+--[[ ----------------------------------------------------------------------------
+    MOVEMENT, PART 4: ABORT
+    ----------------------------------------------------------------------------
+    WHAT  Cancels any flight in progress and puts the character back to normal.
+    WHY   Setting movementActive = false makes the while-loop above exit on its
+          next iteration. This function then force-restores AutoRotate and
+          collisions itself, because the automation loops call task.cancel()
+          immediately afterwards -- and a cancelled coroutine never reaches its
+          own cleanup code. Order matters: ALWAYS stopMovement() BEFORE
+          task.cancel(), or you can be left permanently noclipped.
+---------------------------------------------------------------------------- ]]
+local function stopMovement()
+    movementActive = false
+    pinToken += 1  -- v2.4: releases any pinRoot loop. Without this, stopping a
+                   -- farm during an interaction left the character frozen.
+    if movementHumanoid and movementHumanoid.Parent then
+        -- v2.4: restore the value we actually saw, not a hard-coded true.
+        movementHumanoid.AutoRotate = (movementAutoRotate == nil) or movementAutoRotate
+    end
+    movementHumanoid   = nil
+    movementAutoRotate = nil
+    setNoclip(false)
+    zeroVelocity(getRootPart())
+end
+
+
+--[[ ----------------------------------------------------------------------------
+    MOVEMENT, PART 5: THE MODE SWITCH
+    ----------------------------------------------------------------------------
+    WHAT  Repaints the two mode buttons and changes movementMode.
+    WHY   updateMovementModeButtons is separated from setMovementMode so it can
+          also be called once at GUI build time, to colour the default state
+          without triggering any side effects.
+---------------------------------------------------------------------------- ]]
+local function updateMovementModeButtons()
+    if not ModeAutoFarmBtn or not ModeTeleportBtn then return end
+    if movementMode == "AutoFarm" then
+        ModeAutoFarmBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 70)   -- green = active
+        ModeAutoFarmBtn.TextColor3       = Color3.fromRGB(255, 255, 255)
+        ModeTeleportBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)   -- grey = inactive
+        ModeTeleportBtn.TextColor3       = Color3.fromRGB(220, 220, 220)
+    else
+        ModeAutoFarmBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+        ModeAutoFarmBtn.TextColor3       = Color3.fromRGB(220, 220, 220)
+        ModeTeleportBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 170)  -- blue = active
+        ModeTeleportBtn.TextColor3       = Color3.fromRGB(255, 255, 255)
+    end
+end
+
+local function setMovementMode(mode)
+    if mode ~= "AutoFarm" and mode ~= "Teleport" then return end
+    stopMovement()  -- never leave a flight running under the old mode
+    movementMode = mode
+    updateMovementModeButtons()
+    if StatusLabel then
+        StatusLabel.Text = mode == "AutoFarm"
+            and "● AutoFarm mode: fly + noclip (500)"
+            or  "● Teleport mode: instant TP"
+        StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 120)
+    end
+end
+
+
+--[[ ============================================================================
+    SECTION 14  --  TELEPORT TO YOUR OWN PLOT
+    ----------------------------------------------------------------------------
+    WHAT  Finds which plot in Workspace.Plots belongs to you, and goes there.
+    WHY   The farming loops return home after every egg, presumably because the
+          game requires you to be on your plot to hatch or store what you picked
+          up.
+    LEARN The three-branch owner check is defensive programming worth copying.
+          Game developers store "who owns this" inconsistently:
+              StringValue  -> compare against LocalPlayer.Name
+              ObjectValue  -> compare against the LocalPlayer object itself
+              anything else-> fall back to tostring(value) == Name
+          Handling all three means the script survives the game changing its
+          internal representation.
+
+          Note it calls moveToModel, not teleportToModel, so going home obeys
+          the selected movement mode.
+============================================================================ ]]
+-- Cached between calls: the farm loops go home after every single egg, and
+-- re-scanning every plot's Data folder each time is pure waste.
+local cachedHomePlot = nil
+
+-- v2.5 splits FINDING your plot from GOING to it. The Rare Egg Hunter needs the
+-- plot object itself, so it can work out where "just outside" is without
+-- travelling there yet.
+local function getHomePlot()
+    if cachedHomePlot and cachedHomePlot.Parent then
+        return cachedHomePlot
+    end
+    cachedHomePlot = nil
+
+    local plotsFolder = Workspace:FindFirstChild("Plots")
+    if not plotsFolder then
+        return nil
+    end
+
+    for _, plot in ipairs(plotsFolder:GetChildren()) do
+        local dataFolder = plot:FindFirstChild("Data")
+        if dataFolder then
+            local ownerValue = dataFolder:FindFirstChild("Owner")
+            if ownerValue then
+                local isOwner = false
+
+                if ownerValue:IsA("StringValue") then
+                    isOwner = ownerValue.Value == LocalPlayer.Name
+                elseif ownerValue:IsA("ObjectValue") then
+                    isOwner = ownerValue.Value == LocalPlayer
+                else
+                    isOwner = tostring(ownerValue.Value) == LocalPlayer.Name
+                end
+
+                if isOwner then
+                    cachedHomePlot = plot
+                    return plot
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function teleportToHomePlot(forceFly)
+    local plot = getHomePlot()
+    if not plot then
+        return false
+    end
+    return moveToModel(plot, forceFly)
+end
+
+
+--[[ ============================================================================
+    SECTION 15  --  AUTOMATION, PART 1: FAKING THE INTERACT KEY
+    ----------------------------------------------------------------------------
+    WHAT  Presses and holds E for a given number of seconds.
+    WHY   The game collects an egg when you hold E near it. Rather than calling
+          the game's internal RemoteEvent (which would require reverse
+          engineering it, and is easier for the server to detect as malformed),
+          the script simply synthesises the same input a real player produces.
+    LEARN VirtualInputManager:SendKeyEvent(isPressed, keyCode, isRepeated, target)
+          It is NOT available to ordinary game scripts -- only to exploit
+          executors. That single call is what separates this from a script you
+          could legitimately publish inside a game.
+
+          The press and the release are two separate calls with a wait between,
+          which is exactly what "holding" a key means.
+============================================================================ ]]
+-- Releasing E is its own function because several cleanup paths need it: a
+-- cancelled coroutine never reaches its own release, and a key left logically
+-- held down breaks every later interaction in the session.
+local function releaseEKey()
+    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+end
+
+local function holdEKey(duration)
+    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+    task.wait(duration)
+    releaseEKey()
+end
+
+--[[ v2.4 ADDITION -- INTERACTING RELIABLY
+
+     Roblox collects things through a ProximityPrompt: an object with a
+     HoldDuration, a MaxActivationDistance and a Triggered event the server
+     listens to. v2.3 only ever synthesised the E key, which means it depended
+     on three things it could not control -- the prompt being in range for the
+     full hold, the key event not being swallowed by another UI, and the hold
+     time in Config matching the prompt's real HoldDuration.
+
+     fireproximityprompt(prompt) is an executor global that raises Triggered
+     directly, skipping all three problems. It does not exist in every executor,
+     so this falls back to the key hold, and retries always use the key path in
+     case the game ignores externally fired prompts.
+
+     collectEgg keeps the character pinned in place around this call, for the
+     settle wait, the hold itself and the confirmation window.
+]]
+local function findPrompt(target)
+    if not target then return nil end
+    for _, descendant in ipairs(target:GetDescendants()) do
+        if descendant:IsA("ProximityPrompt") and descendant.Enabled then
+            return descendant
+        end
+    end
+    return nil
+end
+
+-- Assumes the caller already has the character pinned in place; see collectEgg.
+local function interactWith(target, duration, forceKey)
+    local prompt = (not forceKey) and Config.UseProximityPrompt and findPrompt(target) or nil
+
+    if prompt and type(fireproximityprompt) == "function" then
+        -- pcall because executor globals vary in signature and a failure here
+        -- must fall through to the key path, not kill the farming loop.
+        local ok = pcall(fireproximityprompt, prompt)
+        task.wait(0.15)
+        if not ok then
+            holdEKey(duration)
+        end
+    else
+        holdEKey(duration)
+    end
+end
+
+--[[ v2.4 ADDITION -- THE COLLECT CYCLE, WITH PROOF
+
+     This is the function that makes farming consistent. v2.3's inline version
+     was "fly there, hold E, mark it done" -- it never checked whether anything
+     happened, so one failed pickup meant that egg was skipped permanently.
+
+     Here, an attempt only counts when the egg actually disappears from the
+     world. Up to 1 + InteractRetries attempts are made, and `isActive` is a
+     function (not a captured boolean) so the loop re-reads the live stop flag
+     after every yield.
+]]
+local function collectEgg(egg, holdTime, isActive, forceFly)
+    for attempt = 1, 1 + Config.InteractRetries do
+        if not isActive() then return false end
+        if not egg or not egg.Parent then return true end  -- someone else took it
+
+        if moveToModel(egg, forceFly) then
+            -- Pin FIRST, before anything that yields. We are hovering
+            -- Config.TPHeight studs above the egg with nothing underneath, so
+            -- even the short settle wait below is long enough for gravity to
+            -- drop the character several studs and take the prompt out of range.
+            local root   = getRootPart()
+            local anchor = root and root.CFrame
+            local unpin  = anchor and pinRoot(anchor) or nil
+
+            task.wait(0.15)  -- one beat for the prompt to notice we are in range
+
+            if not isActive() then
+                if unpin then unpin() end
+                return false
+            end
+
+            if egg.Parent then
+                interactWith(egg, holdTime, attempt > 1)
+            end
+
+            -- Proof of collection: the server despawns the egg. Poll until it
+            -- does, or until we are sure this attempt failed. Stay pinned for
+            -- this part too -- the server is still processing the pickup.
+            local deadline = os.clock() + Config.CollectConfirmTime
+            while os.clock() < deadline do
+                if not egg.Parent then
+                    if unpin then unpin() end
+                    return true
+                end
+                if not isActive() then
+                    if unpin then unpin() end
+                    return false
+                end
+                task.wait(0.1)
+            end
+
+            if unpin then unpin() end
+        end
+    end
+    return false
+end
+
+
+--[[ ----------------------------------------------------------------------------
+    AUTOMATION, PART 2: FINDING THE "BEST" EGG
+    ----------------------------------------------------------------------------
+    WHAT  Returns the NEAREST egg whose name CONTAINS Config.BestEggName.
+          (v2.3 returned the first one in folder order, which could be on the
+          far side of the map while an identical egg sat ten studs away.)
+    LEARN string.find(haystack, needle, 1, true)
+          The 4th argument "true" means PLAIN find -- Lua pattern matching is
+          disabled. That matters: without it, characters like "-", "(", "%" or
+          "." inside an egg name would be interpreted as pattern syntax and
+          either match the wrong thing or throw an error. Both :lower() calls
+          make the comparison case-insensitive.
+---------------------------------------------------------------------------- ]]
+local function findBestEgg()
+    if not RenderedEggsFolder then
+        return nil
+    end
+
+    -- v2.4: returns the NEAREST match, not whichever one happens to sit first in
+    -- the folder. v2.3 could pick an egg on the far side of the map while an
+    -- identical one was ten studs away, which is both slower and far more likely
+    -- to hit the flight timeout.
+    local needle       = Config.BestEggName:lower()
+    local best         = nil
+    local bestDistance = math.huge
+
+    for _, egg in ipairs(RenderedEggsFolder:GetChildren()) do
+        if isValidEgg(egg) and string.find(egg.Name:lower(), needle, 1, true) then
+            local distance = getDistanceToTarget(egg)
+            if distance < bestDistance then
+                best         = egg
+                bestDistance = distance
+            end
+        end
+    end
+
+    return best
+end
+
+
+--[[ ----------------------------------------------------------------------------
+    AUTOMATION, PART 3: THE "AUTO BEST EGG" LOOP
+    ----------------------------------------------------------------------------
+    WHAT  Endlessly hunts one specific egg type.
+
+          while running:
+              find an egg matching "cherub"
+              found?  -> fly to it -> hold E for 3s -> fly home -> wait 0.8s
+              none?   -> wait 0.5s and look again
+
+    WHY   task.spawn runs the function on a NEW coroutine, so the infinite loop
+          does not freeze the game or the GUI. The returned handle is saved in
+          autoBestEggThread so task.cancel can kill it later.
+
+    LEARN Two habits here are worth copying:
+
+          1. startAutoBestEgg() begins by calling stopAutoBestEgg(). That makes
+             it impossible to accidentally run two loops at once, no matter how
+             fast the user spams the button.
+
+          2. "if autoBestEggActive" is re-checked after EVERY task.wait. A wait
+             yields, and the user may have hit Stop during that yield, so the
+             flag must be re-read rather than trusted from before the pause.
+---------------------------------------------------------------------------- ]]
+local function stopAutoBestEgg()
+    autoBestEggActive = false
+    setAutoBestEggButton(false)
+    stopMovement()                      -- restore collisions BEFORE cancelling
+    if autoBestEggThread then
+        task.cancel(autoBestEggThread)
+        autoBestEggThread = nil
+    end
+    releaseEKey()  -- v2.4: a cancelled coroutine never runs its own key release
+end
+
+-- Passed to collectEgg so it can re-read the live flag after every yield.
+local function isAutoBestEggActive()
+    return autoBestEggActive
+end
+
+local function startAutoBestEgg()
+    stopAutoBestEgg()  -- never run two loops at once
+    -- v2.5: and never run two DIFFERENT loops at once either. Two automation
+    -- threads both writing root.CFrame produce a character that visibly stutters
+    -- between two destinations and collects nothing.
+    if stopAutoFarm then stopAutoFarm() end
+    if stopAutoRare then stopAutoRare() end
+    autoBestEggActive = true
+    setAutoBestEggButton(true)
+
+    autoBestEggThread = task.spawn(function()
+        while autoBestEggActive do
+            local egg = findBestEgg()
+
+            if egg and egg.Parent then
+                setStatus("● Auto Best Egg: " .. egg.Name)
+
+                -- v2.4: the whole fly / interact / verify / retry cycle now
+                -- lives in collectEgg, so this loop and AutoFarm below behave
+                -- identically instead of each having their own timing bugs.
+                local collected = collectEgg(egg, Config.AutoEggHoldTime, isAutoBestEggActive)
+
+                if autoBestEggActive then
+                    teleportToHomePlot()           -- go home to hatch/store
+                end
+
+                if not collected and autoBestEggActive then
+                    setStatus("● Auto Best Egg: pickup not confirmed, retrying",
+                        Color3.fromRGB(230, 170, 60))
+                end
+
+                task.wait(Config.AutoEggDelay)
+            else
+                -- Egg not spawned right now: wait and look again.
+                task.wait(0.5)
+            end
+        end
+    end)
+end
+
+
+--[[ ============================================================================
+    SECTION 16  --  AUTOMATION, PART 4: THE QUEUE-DRIVEN AUTOFARM
+    ----------------------------------------------------------------------------
+    WHAT  Farms every egg TYPE the user ticked in the list, then stops.
+
+          while running:
+              eggs = spawned eggs whose NAME is queued AND not yet processed,
+                     sorted nearest first
+              none queued at all?         -> stop and hide the red button
+              none spawned right now?     -> wait for a respawn, up to
+                                             MaxIdlePasses * IdlePassDelay
+              otherwise, take eggs[1] (the closest):
+                  fly to it -> pin -> interact -> WAIT FOR IT TO DESPAWN
+                            -> retry if it did not -> fly home -> mark processed
+              then loop, and re-measure which egg is closest from here
+
+    WHY   This is the "queue by name, skip by instance" idea from the header,
+          in action. Ticking AutoFarm on a row adds the egg's NAME, so when the
+          server later spawns a fresh egg of that type it gets farmed too. The
+          per-instance processed table stops the loop re-targeting the exact
+          object it just collected during the second or two before the server
+          removes it.
+
+    v2.4 CHANGED THREE THINGS HERE, ALL ABOUT CONSISTENCY:
+
+          ORDER. The queue is walked nearest-first instead of alphabetically.
+          Short flights are the ones that arrive; v2.3's alphabetical order sent
+          the character back and forth across the map between pickups.
+
+          PROOF. Each egg goes through collectEgg, which verifies the egg
+          actually despawned and retries before giving up. v2.3 marked every egg
+          processed the moment it had flown there, so a failed pickup was skipped
+          permanently and looked, from the outside, like the farm "missing" eggs.
+
+          PATIENCE. v2.3 used a "didWork" flag: if one full pass collected
+          nothing it stopped, assuming deadlock. But a pass collects nothing
+          whenever the queued types are simply mid-respawn, which is most of the
+          time -- so AutoFarm kept quitting seconds after it started. v2.4 counts
+          consecutive empty passes instead and only gives up after MaxIdlePasses
+          (~12 seconds). Eggs that genuinely cannot be collected still leave the
+          pool, because a failed egg is marked processed after its retries, so
+          the loop can never spin forever on one target.
+
+          Cleanup and the final status message now live in one `finish` helper.
+          v2.3 wrote its last StatusLabel line after the while-loop, which is
+          unreachable when the user presses Stop -- task.cancel kills the
+          coroutine before it gets there.
+============================================================================ ]]
+
+-- Repaints one row's AutoFarm button to match whether its name is queued.
+local function setAutoFarmButtonState(button, active)
+    if not button then
+        return
+    end
+    -- v2.6 signals state through the TEXT COLOUR, not the background. Every
+    -- button now animates its own background on hover from a base colour it
+    -- captured once, so writing the background here would be undone the next
+    -- time the pointer left the button.
+    button.Text       = active and "ON" or "FARM"
+    button.TextColor3 = active
+        and Color3.fromRGB(56, 214, 130)
+        or  Color3.fromRGB(237, 240, 246)
+end
+
+-- (isValidEgg now lives up in Section 7, next to the other target helpers.)
+
+-- Every spawned egg that is queued by name and not yet collected.
+local function getAutoFarmEggs()
+    local found = {}
+    if not RenderedEggsFolder then
+        return found
+    end
+
+    for _, egg in ipairs(RenderedEggsFolder:GetChildren()) do
+        if isValidEgg(egg) and autoFarmEggs[egg.Name] and not autoFarmProcessed[egg] then
+            -- Distance is measured ONCE, here, and stored. Calling
+            -- getDistanceToTarget from inside the comparator would re-measure a
+            -- moving target mid-sort; Lua detects the resulting inconsistency
+            -- and throws "invalid order function for sorting", which inside a
+            -- task.spawn kills the farm with no message at all.
+            table.insert(found, { egg = egg, distance = getDistanceToTarget(egg) })
+        end
+    end
+
+    -- v2.4: NEAREST FIRST. v2.3 sorted alphabetically, so the character bounced
+    -- from one end of the map to the other between pickups. Sorting by distance
+    -- collects exactly the same set with a fraction of the travel, and short
+    -- flights are the ones that succeed.
+    table.sort(found, function(a, b)
+        if a.distance == b.distance then
+            return a.egg.Name:lower() < b.egg.Name:lower()
+        end
+        return a.distance < b.distance
+    end)
+
+    local eggs = {}
+    for index, entry in ipairs(found) do
+        eggs[index] = entry.egg
+    end
+    return eggs
+end
+
+function stopAutoFarm()
+    autoFarmActive = false
+    stopMovement()                  -- restore collisions BEFORE cancelling
+    autoFarmCurrentName = nil
+    if autoFarmThread then
+        task.cancel(autoFarmThread)
+        autoFarmThread = nil
+    end
+    -- Critical: a cancelled coroutine never runs its own key-release, so if we
+    -- were cancelled mid-holdEKey the E key would stay logically held down.
+    releaseEKey()
+end
+
+-- Passed to collectEgg; see the note on isAutoBestEggActive.
+local function isAutoFarmActive()
+    return autoFarmActive
+end
+
+local function startAutoFarm()
+    stopAutoFarm()
+    stopAutoBestEgg()                        -- v2.5: modes are exclusive
+    if stopAutoRare then stopAutoRare() end
+    autoFarmActive = true
+
+    if StopAutoFarmBtn then
+        StopAutoFarmBtn.Visible = true
+    end
+
+    -- One exit path for every way the loop can end. v2.3 duplicated this cleanup
+    -- in three places and its final status message was unreachable whenever the
+    -- user pressed Stop, because task.cancel killed the coroutine first.
+    local function finish(message)
+        autoFarmActive      = false
+        autoFarmCurrentName = nil
+        autoFarmThread      = nil
+        if StopAutoFarmBtn then
+            StopAutoFarmBtn.Visible = false
+        end
+        releaseEKey()
+        setStatus(message, Color3.fromRGB(180, 180, 180))
+    end
+
+    autoFarmThread = task.spawn(function()
+        local idlePasses = 0
+
+        while autoFarmActive do
+            local eggs = getAutoFarmEggs()
+
+            if #eggs == 0 then
+                -- Nothing queued at all means the user genuinely has nothing
+                -- selected, so stop immediately.
+                if next(autoFarmEggs) == nil then
+                    finish("● AutoFarm finished: nothing selected")
+                    return
+                end
+
+                -- Otherwise the queued types are simply despawned right now.
+                -- v2.3 treated this as "we are stuck" and quit on the very first
+                -- empty pass, which is the reason AutoFarm so often stopped a
+                -- few seconds after starting. Wait for the respawn instead, and
+                -- only give up after MaxIdlePasses of nothing.
+                idlePasses += 1
+                if idlePasses >= Config.MaxIdlePasses then
+                    finish("● AutoFarm finished: no selected eggs left")
+                    return
+                end
+
+                setStatus("● AutoFarm: waiting for eggs to respawn",
+                    Color3.fromRGB(220, 200, 120))
+                task.wait(Config.IdlePassDelay)
+            else
+                idlePasses = 0
+
+                -- Take the NEAREST egg only, then loop and re-measure. v2.3
+                -- iterated a whole snapshot of the queue, but every pickup ends
+                -- with a trip home, so by the second egg in that snapshot the
+                -- ordering it was sorted into no longer describes where we are.
+                -- Re-picking each time keeps every single flight a short one.
+                local egg = eggs[1]
+
+                if isValidEgg(egg) and not autoFarmProcessed[egg] then
+                    local eggName = egg.Name
+                    autoFarmCurrentName = eggName
+                    setStatus("● AutoFarm: " .. eggName)
+
+                    local collected = collectEgg(egg, Config.AutoFarmHoldTime, isAutoFarmActive)
+
+                    if autoFarmActive then
+                        teleportToHomePlot()  -- go home to hatch/store
+                    end
+
+                    -- Marked either way so the queue always advances, but an
+                    -- unconfirmed pickup is now REPORTED rather than hidden.
+                    -- collectEgg has already retried it InteractRetries times by
+                    -- this point, so an egg that keeps failing leaves the pool
+                    -- instead of stalling the farm on one unreachable target.
+                    autoFarmProcessed[egg] = true
+                    if not collected and autoFarmActive then
+                        setStatus("● AutoFarm: " .. eggName .. " not confirmed",
+                            Color3.fromRGB(230, 170, 60))
+                    end
+                end
+
+                autoFarmCurrentName = nil
+                task.wait(0.15)
+            end
+        end
+    end)
+end
+
+
+--[[ ============================================================================
+    SECTION 16B  --  AUTOMATION, PART 5: THE RARE EGG HUNTER   (new in v2.5)
+    ----------------------------------------------------------------------------
+    WHAT  Waits for a rare egg to spawn, flies to it, collects it, then goes home
+          SLOWLY ENOUGH NOT TO BE OBVIOUS.
+
+          while running:
+              nearest un-taken egg matching Config.RareEggNames?
+                  no  -> look again in RareScanDelay seconds
+                  yes -> start the clock
+                         fly to it (noclip) -> pin -> interact -> verify
+                         fly to a point PlotHoldDistance studs SHORT of the plot
+                         hold there until the clock reads SafeCycleMin
+                         fly the last stretch onto the plot
+
+    WHY THE CLOCK. Everything else in this file optimises for speed. This one
+    deliberately does not. The detectable thing about a rare-egg bot is not any
+    single action, it is the round trip: leaving your plot, crossing the map,
+    picking up the rarest item in the game and being back home ten seconds later
+    is not a shape a human produces. So the cycle is timed from the moment the
+    hunter leaves, and any cycle that would finish early is padded out to
+    SafeCycleMin before the last step is taken.
+
+          The padding is spent OUTSIDE the plot on purpose. Standing near your
+          own base for a few seconds is the most ordinary thing in the game;
+          appearing on it the instant a rare egg vanishes from the map is not.
+
+          SafeCycleMax is not enforced, only reported. Once a cycle has run long
+          there is nothing useful left to do about it -- the information is for
+          you, so you can tell a slow server apart from a broken script.
+
+    WHY IT NEVER TELEPORTS. Every moveToModel call here passes forceFly = true,
+    so the AutoFarm / Teleport switch is ignored for this button in both
+    directions. Flying is a stream of plausible positions; a teleport is a single
+    impossible one. A mode whose entire purpose is patience has no use for it.
+
+    LEARN The flight marker trick. moveToModel takes an Instance, but "45 studs
+          short of the plot" is a bare Vector3 with no object at it. Rather than
+          duplicate the flight loop for raw coordinates, makeFlightMarker creates
+          a transparent anchored Part there, flies to it, and destroys it. Parts
+          created by an exploit on the client are never replicated to the server,
+          so nobody else ever sees it.
+============================================================================ ]]
+local function isRareEgg(egg)
+    local name = egg.Name:lower()
+    for _, needle in ipairs(Config.RareEggNames) do
+        -- Plain find (4th arg true), so a name like "Black-Hole (Limited)"
+        -- cannot be read as Lua pattern syntax.
+        if string.find(name, needle:lower(), 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function findNearestRareEgg()
+    if not RenderedEggsFolder then
+        return nil
+    end
+
+    -- autoFarmProcessed is shared with the queue farm on purpose: in both loops
+    -- it means "this exact instance has been dealt with, do not target it again".
+    local best         = nil
+    local bestDistance = math.huge
+
+    for _, egg in ipairs(RenderedEggsFolder:GetChildren()) do
+        if isValidEgg(egg) and not autoFarmProcessed[egg] and isRareEgg(egg) then
+            local distance = getDistanceToTarget(egg)
+            if distance < bestDistance then
+                best         = egg
+                bestDistance = distance
+            end
+        end
+    end
+
+    return best
+end
+
+local function makeFlightMarker(position)
+    local marker = Instance.new("Part")
+    marker.Name         = "EggsESP_FlightMarker"
+    marker.Size         = Vector3.new(1, 1, 1)
+    marker.Anchored     = true
+    marker.CanCollide   = false
+    marker.Transparency = 1
+    -- pcall: CanQuery and CanTouch do not exist on older Roblox builds, and a
+    -- missing property here should not take the hunter down.
+    pcall(function()
+        marker.CanQuery = false
+        marker.CanTouch = false
+    end)
+    marker.Parent = Workspace
+    return marker
+end
+
+-- Flies to a point short of the plot and returns the CFrame to hold there.
+-- Returns nil if the flight did not arrive, in which case the caller simply
+-- waits out the window wherever it happens to be.
+local function moveNearPlot(plot)
+    local plotCFrame = getTargetCFrame(plot)
+    local root       = getRootPart()
+    if not plotCFrame or not root then
+        return nil
+    end
+
+    -- Stop short ALONG THE LINE WE ARE ALREADY ON: take the direction from the
+    -- plot back towards wherever we are now. That reads as slowing down on the
+    -- way in. Picking a fixed compass direction instead would make the hold spot
+    -- jump to the far side of the plot on half the trips, which is a far odder
+    -- path than the one it is trying to avoid.
+    local away = root.Position - plotCFrame.Position
+    away = Vector3.new(away.X, 0, away.Z)  -- flatten: hold beside it, not above
+
+    if away.Magnitude < 1 then
+        local look = plotCFrame.LookVector   -- already standing on the plot
+        away = Vector3.new(look.X, 0, look.Z)
+    end
+    if away.Magnitude < 1 then
+        away = Vector3.new(1, 0, 0)          -- degenerate; any direction will do
+    end
+
+    local holdPosition = plotCFrame.Position
+        + (away.Unit * Config.PlotHoldDistance)
+        + Vector3.new(0, Config.PlotHoldHeight, 0)
+
+    local marker  = makeFlightMarker(holdPosition)
+    local arrived = moveToModel(marker, true)
+    marker:Destroy()
+
+    if not arrived then
+        return nil
+    end
+
+    local currentRoot = getRootPart()
+    return currentRoot and currentRoot.CFrame or CFrame.new(holdPosition)
+end
+
+local function waitOutSafeWindow(cycleStart, holdCFrame, isActive)
+    -- The pin can legitimately need to run for the whole SafeCycleMin, which is
+    -- far longer than the default PinMaxTime built for a 3 second interaction.
+    local unpin = holdCFrame and pinRoot(holdCFrame, Config.SafeCycleMin + 5) or nil
+
+    while isActive() do
+        local elapsed = os.clock() - cycleStart
+        if elapsed >= Config.SafeCycleMin then
+            break
+        end
+        setStatus(string.format("● Rare: holding outside, %ds / %ds",
+            math.floor(elapsed), Config.SafeCycleMin), Color3.fromRGB(230, 200, 90))
+        task.wait(0.25)
+    end
+
+    if unpin then unpin() end
+end
+
+function stopAutoRare()
+    autoRareActive = false
+    setAutoRareButton(false)
+    stopMovement()  -- restore collisions and release any pin BEFORE cancelling
+    if autoRareThread then
+        task.cancel(autoRareThread)
+        autoRareThread = nil
+    end
+    releaseEKey()
+end
+
+local function isAutoRareActive()
+    return autoRareActive
+end
+
+local function startAutoRare()
+    stopAutoRare()
+    stopAutoBestEgg()  -- the three automation modes are mutually exclusive
+    stopAutoFarm()
+
+    autoRareActive = true
+    setAutoRareButton(true)
+
+    autoRareThread = task.spawn(function()
+        while autoRareActive do
+            local egg = findNearestRareEgg()
+
+            if not egg then
+                setStatus("● Rare: watching for a spawn", Color3.fromRGB(200, 200, 140))
+                task.wait(Config.RareScanDelay)
+            else
+                local eggName    = egg.Name
+                local cycleStart = os.clock()  -- the clock starts when we LEAVE
+
+                setStatus("● Rare: going for " .. eggName, Color3.fromRGB(255, 200, 60))
+
+                -- v2.6: take the screen. The colours are chosen per egg type in
+                -- Config.RareEggFX -- black and purple for a Blackhole, white
+                -- and yellow for a Cherub -- so the alert tells you WHAT was
+                -- found without you having to read anything.
+                if ScreenFX.found then
+                    ScreenFX.found(eggName)
+                end
+
+                -- forceFly = true on every move this loop makes.
+                local collected = collectEgg(egg, Config.RareEggHoldTime, isAutoRareActive, true)
+
+                -- Marked either way. collectEgg has already retried it
+                -- InteractRetries times, so an egg that still refuses to be
+                -- collected is one the hunter should stop circling back to.
+                autoFarmProcessed[egg] = true
+
+                if not autoRareActive then break end
+
+                if not collected then
+                    setStatus("● Rare: " .. eggName .. " not confirmed",
+                        Color3.fromRGB(230, 170, 60))
+                end
+
+                local plot = getHomePlot()
+                if not plot then
+                    setStatus("● Rare: your plot was not found", Color3.fromRGB(255, 100, 100))
+                    task.wait(1)
+                else
+                    local holdCFrame = moveNearPlot(plot)
+
+                    if autoRareActive then
+                        waitOutSafeWindow(cycleStart, holdCFrame, isAutoRareActive)
+                    end
+
+                    if autoRareActive then
+                        moveToModel(plot, true)  -- the last stretch, still flying
+
+                        local elapsed = os.clock() - cycleStart
+                        if elapsed > Config.SafeCycleMax then
+                            setStatus(string.format("● Rare: %s done -- cycle ran long (%ds)",
+                                eggName, math.floor(elapsed)), Color3.fromRGB(230, 170, 60))
+                        else
+                            setStatus(string.format("● Rare: %s done in %ds",
+                                eggName, math.floor(elapsed)))
+                        end
+                    end
+                end
+
+                task.wait(0.3)
+            end
+        end
+    end)
+end
+
+
+--[[ ============================================================================
+    THE INTERFACE LIVES INSIDE ONE do ... end BLOCK
+    ----------------------------------------------------------------------------
+    Lua allows 200 local variables per scope, and the interface declares a lot of
+    them. Giving it its own block keeps those out of the file's top-level budget,
+    so future sections still have room. Everything the automation code needs was
+    forward-declared back in Section 4 and is assigned, not re-declared, in here.
+============================================================================ ]]
+do
+
+local ScreenGui, MainFrame, TopBar, TitleLabel, GameLabel, AuthorLabel
+local MinimizeBtn, ContentContainer, TPHomeBtn, KeybindBtn
+local EggCountLabel, ToggleListBtn, ListContainerFrame
+local RefreshBtn, SortBtn, SearchBox, ScrollList, UIListLayout
+local DeviceFrame, PCBtn, MobileBtn
+local currentExpandedWidth  = Config.PCWidth
+local currentExpandedHeight = Config.PCHeight
+
+--[[ ============================================================================
+    SECTION 17  --  THE INTERFACE, REBUILT IN v2.6
+    ----------------------------------------------------------------------------
+    WHY THIS WAS REWRITTEN
+
+    Every version up to v2.5 positioned each widget with a hard-coded pixel
+    offset, twice -- once in setPCMode and once in setMobileMode:
+
+        AutoBestEggBtn.Position = UDim2.new(0, 0, 0, 92)
+        TPHomeBtn.Position      = UDim2.new(0, 0, 0, 129)
+        ...
+
+    That has three consequences, and you hit all three:
+
+      1. THE LIST FELL OUT OF THE WINDOW. The offsets were tuned against one
+         window height. Nothing checked that the last element still fitted, so
+         the egg list simply ran past the bottom edge.
+      2. ADDING ONE BUTTON MEANT RE-TYPING EVERY NUMBER BELOW IT, in both
+         layouts, plus the window height. v2.5's Rare Egg Hunter needed eleven
+         edits to add one row.
+      3. THE TWO LAYOUTS DRIFTED APART, because nothing forced them to agree.
+
+    v2.6 deletes all of it. The rules now are:
+
+      * NOTHING IS POSITIONED BY HAND. Every stack is a UIListLayout, so an
+        element's position is derived from the ones above it. Insert a row
+        anywhere and everything below moves by itself.
+      * THE BODY IS A SCROLLING FRAME with AutomaticCanvasSize. Content that
+        does not fit becomes scrollable instead of becoming invisible. It is
+        now structurally impossible for a control to end up outside the window.
+      * THE WINDOW IS CLAMPED TO THE VIEWPORT at build time, so it cannot open
+        off-screen on a small phone.
+      * ONE LAYOUT, TWO SIZES. setPCMode / setMobileMode are gone; applyDevice
+        sets a size and a UIScale and that is the entire difference.
+      * COLOURS AND SPACING COME FROM ONE TABLE (Theme, below). Changing the
+        accent colour is one edit, not forty.
+
+    LEARN The general lesson is worth more than the script: absolute positioning
+          is a layout that only works for the exact content you had when you
+          wrote it. Layout objects express the RELATIONSHIP between elements, so
+          they keep working when the content changes.
+============================================================================ ]]
+
+--[[ ----------------------------------------------------------------------------
+    DESIGN TOKENS
+    ----------------------------------------------------------------------------
+    One table holding every colour, radius and spacing value in the interface.
+    Widgets reference Theme.Surface, never Color3.fromRGB(24, 26, 32).
+---------------------------------------------------------------------------- ]]
+local Theme = {
+    -- Surfaces, darkest to lightest
+    Backdrop   = Color3.fromRGB(13, 14, 18),
+    Surface    = Color3.fromRGB(21, 23, 29),
+    Raised     = Color3.fromRGB(30, 33, 41),
+    Control    = Color3.fromRGB(41, 45, 56),
+    Line       = Color3.fromRGB(56, 61, 74),
+
+    -- Text
+    Text       = Color3.fromRGB(237, 240, 246),
+    TextDim    = Color3.fromRGB(150, 157, 172),
+    TextFaint  = Color3.fromRGB(104, 111, 126),
+
+    -- Semantic
+    Accent     = Color3.fromRGB(88, 166, 255),   -- neutral interactive blue
+    Good       = Color3.fromRGB(56, 214, 130),   -- running / success
+    Warn       = Color3.fromRGB(255, 196, 61),   -- waiting / unconfirmed
+    Bad        = Color3.fromRGB(255, 99, 99),    -- failure / stop
+    Rare       = Color3.fromRGB(186, 124, 255),  -- the Rare Egg Hunter's colour
+
+    -- Geometry
+    Radius     = 10,
+    RadiusSm   = 7,
+    Pad        = 12,
+    Gap        = 9,
+    RowHeight  = 36,
+    TitleSize  = 15,
+    BodySize   = 13,
+    SmallSize  = 11,
+    TinySize   = 10,
+}
+
+
+--[[ ----------------------------------------------------------------------------
+    PRIMITIVE HELPERS
+    ----------------------------------------------------------------------------
+    Tiny wrappers around the Roblox UI modifier objects. They exist so the
+    component builders below read as a description of the interface rather than
+    as a wall of Instance.new calls.
+---------------------------------------------------------------------------- ]]
+local function addCorner(instance, radius)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, radius or Theme.Radius)
+    corner.Parent       = instance
+    return corner
+end
+
+local function addStroke(instance, color, transparency, thickness)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color        = color or Theme.Line
+    stroke.Transparency = transparency or 0.45
+    stroke.Thickness    = thickness or 1
+    stroke.Parent       = instance
+    return stroke
+end
+
+local function addPadding(instance, all, horizontal)
+    local pad = Instance.new("UIPadding")
+    local v   = UDim.new(0, all)
+    local h   = UDim.new(0, horizontal or all)
+    pad.PaddingTop    = v
+    pad.PaddingBottom = v
+    pad.PaddingLeft   = h
+    pad.PaddingRight  = h
+    pad.Parent        = instance
+    return pad
+end
+
+-- A vertical stack. Children are ordered by LayoutOrder and spaced by `gap`.
+local function addVStack(instance, gap)
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection       = Enum.FillDirection.Vertical
+    layout.SortOrder           = Enum.SortOrder.LayoutOrder
+    layout.Padding             = UDim.new(0, gap or Theme.Gap)
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    layout.Parent              = instance
+    return layout
+end
+
+local function addHStack(instance, gap, alignRight)
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection       = Enum.FillDirection.Horizontal
+    layout.SortOrder           = Enum.SortOrder.LayoutOrder
+    layout.Padding             = UDim.new(0, gap or 6)
+    layout.VerticalAlignment   = Enum.VerticalAlignment.Center
+    layout.HorizontalAlignment = alignRight
+        and Enum.HorizontalAlignment.Right
+        or  Enum.HorizontalAlignment.Left
+    layout.Parent              = instance
+    return layout
+end
+
+local function makeLabel(parent, text, size, color, order)
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Text                   = text
+    label.TextSize               = size or Theme.BodySize
+    label.TextColor3             = color or Theme.Text
+    label.Font                   = Enum.Font.GothamMedium
+    label.TextXAlignment         = Enum.TextXAlignment.Left
+    label.Size                   = UDim2.new(1, 0, 0, size and (size + 6) or 19)
+    label.LayoutOrder            = order or 1
+    label.Parent                 = parent
+    return label
+end
+
+
+--[[ ----------------------------------------------------------------------------
+    INTERACTION FEEDBACK
+    ----------------------------------------------------------------------------
+    Every clickable surface gets the same hover / press behaviour, driven from a
+    base colour captured once. v2.3's version read the widget's live colour on
+    every hover and nudged it, so an interrupted tween fed its own half-finished
+    value back in and buttons drifted permanently lighter.
+---------------------------------------------------------------------------- ]]
+local function makeInteractive(button, baseColor, hoverColor, pressColor)
+    local base  = baseColor  or Theme.Control
+    local hover = hoverColor or Theme.Line
+    local press = pressColor or Theme.Raised
+
+    button.AutoButtonColor  = false
+    button.BackgroundColor3 = base
+
+    button.MouseEnter:Connect(function()
+        tween(button, { BackgroundColor3 = hover }, 0.12)
+    end)
+    button.MouseLeave:Connect(function()
+        tween(button, { BackgroundColor3 = base }, 0.14)
+    end)
+    button.MouseButton1Down:Connect(function()
+        tween(button, { BackgroundColor3 = press }, 0.06)
+    end)
+    button.MouseButton1Up:Connect(function()
+        tween(button, { BackgroundColor3 = hover }, 0.10)
+    end)
+end
+
+--[[ ----------------------------------------------------------------------------
+    COMPONENTS
+    ----------------------------------------------------------------------------
+    Each builder returns the object a caller needs to keep, and hides the rest.
+    This is the part that makes adding a feature cheap: a new control is one call
+    to makeToggle, with no positions to work out and nothing below it to move.
+---------------------------------------------------------------------------- ]]
+
+-- A titled panel. Returns the frame you put content into.
+local function makeCard(parent, titleText, order)
+    local card = Instance.new("Frame")
+    card.Name             = "Card_" .. titleText:gsub("%s", "")
+    card.BackgroundColor3 = Theme.Surface
+    card.BorderSizePixel  = 0
+    card.Size             = UDim2.new(1, 0, 0, 0)
+    card.AutomaticSize    = Enum.AutomaticSize.Y  -- grows to fit its children
+    card.LayoutOrder      = order or 1
+    card.Parent           = parent
+    addCorner(card)
+    addStroke(card, Theme.Line, 0.55)
+    addPadding(card, Theme.Pad, Theme.Pad)
+
+    local stack = Instance.new("Frame")
+    stack.Name                   = "Stack"
+    stack.BackgroundTransparency = 1
+    stack.Size                   = UDim2.new(1, 0, 0, 0)
+    stack.AutomaticSize          = Enum.AutomaticSize.Y
+    stack.Parent                 = card
+    addVStack(stack, Theme.Gap)
+
+    local heading = makeLabel(stack, titleText:upper(), Theme.TinySize, Theme.TextFaint, 0)
+    heading.Font = Enum.Font.GothamBold
+
+    return stack, card
+end
+
+-- A full-width action button.
+local function makeButton(parent, text, order, accentColor)
+    local button = Instance.new("TextButton")
+    button.Name             = "Btn_" .. text:gsub("%W", "")
+    button.Size             = UDim2.new(1, 0, 0, Theme.RowHeight)
+    button.BorderSizePixel  = 0
+    button.Text             = text
+    button.TextSize         = Theme.BodySize
+    button.TextColor3       = accentColor or Theme.Text
+    button.Font             = Enum.Font.GothamMedium
+    button.LayoutOrder      = order or 1
+    button.Parent           = parent
+    addCorner(button, Theme.RadiusSm)
+    makeInteractive(button)
+    return button
+end
+
+--[[ A switch. Returns a handle with set(active) / get(), NOT the raw button,
+     because these can now be flipped from three different places -- the user
+     clicking, another automation mode starting, or a loop finishing on its own.
+     Routing every repaint through one function is what keeps the label honest.
+]]
+local function makeToggle(parent, labelText, hintText, order, activeColor)
+    local accent = activeColor or Theme.Good
+
+    local row = Instance.new("TextButton")
+    row.Name             = "Toggle_" .. labelText:gsub("%W", "")
+    row.Size             = UDim2.new(1, 0, 0, hintText and 42 or Theme.RowHeight)
+    row.BackgroundColor3  = Theme.Raised
+    row.BorderSizePixel  = 0
+    row.Text             = ""
+    row.AutoButtonColor  = false
+    row.LayoutOrder      = order or 1
+    row.Parent           = parent
+    addCorner(row, Theme.RadiusSm)
+    addPadding(row, 8, 10)
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Text                   = labelText
+    title.TextSize               = Theme.BodySize
+    title.TextColor3             = Theme.Text
+    title.Font                   = Enum.Font.GothamMedium
+    title.TextXAlignment         = Enum.TextXAlignment.Left
+    title.Position               = UDim2.new(0, 0, 0, 0)
+    title.Size                   = UDim2.new(1, -54, 0, hintText and 16 or 20)
+    title.Parent                 = row
+
+    if hintText then
+        local hint = Instance.new("TextLabel")
+        hint.BackgroundTransparency = 1
+        hint.Text                   = hintText
+        hint.TextSize               = Theme.TinySize
+        hint.TextColor3             = Theme.TextFaint
+        hint.Font                   = Enum.Font.Gotham
+        hint.TextXAlignment         = Enum.TextXAlignment.Left
+        hint.TextTruncate           = Enum.TextTruncate.AtEnd
+        hint.Position               = UDim2.new(0, 0, 0, 17)
+        hint.Size                   = UDim2.new(1, -54, 0, 14)
+        hint.Parent                 = row
+    end
+
+    -- The switch itself: a track with a knob that slides.
+    local track = Instance.new("Frame")
+    track.AnchorPoint      = Vector2.new(1, 0.5)
+    track.Position         = UDim2.new(1, 0, 0.5, 0)
+    track.Size             = UDim2.new(0, 40, 0, 22)
+    track.BackgroundColor3 = Theme.Control
+    track.BorderSizePixel  = 0
+    track.Parent           = row
+    addCorner(track, 11)
+
+    local knob = Instance.new("Frame")
+    knob.AnchorPoint      = Vector2.new(0, 0.5)
+    knob.Position         = UDim2.new(0, 3, 0.5, 0)
+    knob.Size             = UDim2.new(0, 16, 0, 16)
+    knob.BackgroundColor3 = Theme.TextDim
+    knob.BorderSizePixel  = 0
+    knob.Parent           = track
+    addCorner(knob, 8)
+
+    local state  = false
+    local handle = {}
+
+    function handle.set(active)
+        state = active and true or false
+        tween(track, { BackgroundColor3 = state and accent or Theme.Control }, 0.15)
+        tween(knob, {
+            Position        = state and UDim2.new(1, -19, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+            BackgroundColor3 = state and Color3.fromRGB(255, 255, 255) or Theme.TextDim,
+        }, 0.15)
+        title.TextColor3 = state and accent or Theme.Text
+    end
+
+    function handle.get()
+        return state
+    end
+
+    handle.Row = row
+    row.MouseEnter:Connect(function() tween(row, { BackgroundColor3 = Theme.Control }, 0.12) end)
+    row.MouseLeave:Connect(function() tween(row, { BackgroundColor3 = Theme.Raised }, 0.14) end)
+
+    handle.set(false)
+    return handle
+end
+
+-- Two mutually exclusive buttons sharing one pill. Returns both buttons, because
+-- updateMovementModeButtons (Section 13) repaints them directly.
+local function makeSegmented(parent, leftText, rightText, order)
+    local holder = Instance.new("Frame")
+    holder.BackgroundColor3 = Theme.Raised
+    holder.BorderSizePixel  = 0
+    holder.Size             = UDim2.new(1, 0, 0, 34)
+    holder.LayoutOrder      = order or 1
+    holder.Parent           = parent
+    addCorner(holder, Theme.RadiusSm)
+    addPadding(holder, 3, 3)
+
+    local function segment(text, index)
+        local button = Instance.new("TextButton")
+        button.Size             = UDim2.new(0.5, -2, 1, 0)
+        button.Position         = index == 1 and UDim2.new(0, 0, 0, 0) or UDim2.new(0.5, 2, 0, 0)
+        button.BackgroundColor3 = Theme.Raised
+        button.BorderSizePixel  = 0
+        button.Text             = text
+        button.TextSize         = Theme.SmallSize
+        button.TextColor3       = Theme.TextDim
+        button.Font             = Enum.Font.GothamMedium
+        button.AutoButtonColor  = false
+        button.Parent           = holder
+        addCorner(button, 5)
+        return button
+    end
+
+    return segment(leftText, 1), segment(rightText, 2)
+end
+
+
+--[[ ============================================================================
+    SECTION 18  --  SCREEN EFFECTS  (new in v2.6)
+    ----------------------------------------------------------------------------
+    WHAT  Full-screen colour flashes: a short splash when the Rare Egg Hunter is
+          armed, and a two-colour blink when it locks onto a rare egg.
+
+    WHY   The hunter can sit idle for a long time waiting for a spawn. The whole
+          point of an alert is that it works when you are NOT looking at a small
+          status line in the corner of a menu -- so the alert takes the screen.
+
+    THE COLOURS come from Config.RareEggFX, matched against the egg's name:
+          Blackhole -> black and purple
+          Cherub    -> white and yellow
+          anything else -> Config.DefaultFXColors
+
+    HOW IT IS BUILT
+      * Its own ScreenGui with a high DisplayOrder, so it draws over the menu and
+        over the game's own UI.
+      * IgnoreGuiInset = true, so it covers the top bar area too.
+      * The overlay Frame has Active = false and no interactive children. A
+        non-Active Frame does not absorb clicks, so the effect never costs you a
+        tap -- important, since it fires while you are playing.
+
+    THE TOKEN GUARD is the same generation-counter trick used by pinRoot. Two
+    rare eggs found back to back would otherwise leave two blink loops fighting
+    over one frame's transparency, and the overlay could be left visible. Each
+    run claims the next token and stops the moment the token changes.
+============================================================================ ]]
+local FXGui = Instance.new("ScreenGui")
+FXGui.Name             = "RenderedEggsESP_FX"
+FXGui.ResetOnSpawn     = false
+FXGui.IgnoreGuiInset   = true
+FXGui.DisplayOrder     = 9999
+FXGui.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
+pcall(function() FXGui.Parent = TargetParent end)
+
+local FXOverlay = Instance.new("Frame")
+FXOverlay.Name                   = "Overlay"
+FXOverlay.Size                   = UDim2.fromScale(1, 1)
+FXOverlay.BackgroundColor3       = Color3.fromRGB(0, 0, 0)
+FXOverlay.BackgroundTransparency = 1
+FXOverlay.BorderSizePixel        = 0
+FXOverlay.Active                 = false  -- never swallows input
+FXOverlay.Visible                = true
+FXOverlay.Parent                 = FXGui
+
+-- A soft vignette rather than a flat wash: the edges carry most of the colour,
+-- so the middle of the screen stays readable while the flash is running.
+local FXGradient = Instance.new("UIGradient")
+FXGradient.Rotation = 90
+FXGradient.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0.00, 0.00),
+    NumberSequenceKeypoint.new(0.50, 0.45),
+    NumberSequenceKeypoint.new(1.00, 0.00),
+})
+FXGradient.Parent = FXOverlay
+
+local fxToken = 0
+
+local function fxStop()
+    fxToken += 1
+    FXOverlay.BackgroundTransparency = 1
+end
+
+-- One quick pulse in a single colour.
+local function fxSplash(color, peak, duration)
+    if not screenFXEnabled then return end
+
+    fxToken += 1
+    local myToken = fxToken
+    local half    = (duration or Config.SplashTime) / 2
+
+    FXOverlay.BackgroundColor3       = color
+    FXOverlay.BackgroundTransparency = 1
+
+    task.spawn(function()
+        tween(FXOverlay, { BackgroundTransparency = peak or Config.BlinkPeak }, half)
+        task.wait(half)
+        if fxToken ~= myToken then return end
+        tween(FXOverlay, { BackgroundTransparency = 1 }, half)
+        task.wait(half)
+        if fxToken == myToken then
+            FXOverlay.BackgroundTransparency = 1
+        end
+    end)
+end
+
+-- Alternate between two colours for `duration` seconds.
+local function fxBlink(colorA, colorB, duration)
+    if not screenFXEnabled then return end
+
+    fxToken += 1
+    local myToken = fxToken
+
+    task.spawn(function()
+        local deadline = os.clock() + (duration or Config.BlinkDuration)
+        local flip     = false
+
+        while os.clock() < deadline and fxToken == myToken do
+            flip = not flip
+            FXOverlay.BackgroundColor3 = flip and colorA or colorB
+            -- Snap ON, ease OFF: an instant edge reads as an alarm, a symmetric
+            -- fade reads as an animation and is much easier to miss.
+            FXOverlay.BackgroundTransparency = Config.BlinkPeak
+            tween(FXOverlay, { BackgroundTransparency = 0.85 }, Config.BlinkInterval)
+            task.wait(Config.BlinkInterval)
+        end
+
+        if fxToken == myToken then
+            tween(FXOverlay, { BackgroundTransparency = 1 }, 0.25)
+            task.wait(0.25)
+            if fxToken == myToken then
+                FXOverlay.BackgroundTransparency = 1
+            end
+        end
+    end)
+end
+
+-- Look up the colour pair for an egg name.
+local function fxColorsFor(eggName)
+    local lowered = eggName:lower()
+    for _, entry in ipairs(Config.RareEggFX) do
+        if string.find(lowered, entry.match:lower(), 1, true) then
+            return entry.a, entry.b
+        end
+    end
+    return Config.DefaultFXColors.a, Config.DefaultFXColors.b
+end
+
+-- Published to the automation code through the ScreenFX table that Section 4
+-- forward-declared. The hunter must not depend on the GUI existing.
+ScreenFX.armed = function()
+    fxSplash(Theme.Rare, 0.45, 0.7)
+end
+
+ScreenFX.found = function(eggName)
+    local a, b = fxColorsFor(eggName)
+    fxBlink(a, b, Config.BlinkDuration)
+end
+
+ScreenFX.stop = fxStop
+
+
+--[[ ============================================================================
+    SECTION 19  --  BUILDING THE WINDOW
+============================================================================ ]]
+
+-- Destroy an older copy of this menu if the script is executed twice. Wrapped in
+-- pcall because PlayerGui access can throw in some executor environments.
+pcall(function()
+    local old = TargetParent:FindFirstChild("RenderedEggsESP_Menu")
+    if old then old:Destroy() end
+end)
+
+ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name           = "RenderedEggsESP_Menu"
+ScreenGui.ResetOnSpawn   = false
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder   = 9000
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent         = TargetParent
+
+MainFrame = Instance.new("Frame")
+MainFrame.Name             = "Main"
+MainFrame.AnchorPoint      = Vector2.new(0.5, 0.5)
+MainFrame.Position         = UDim2.fromScale(0.5, 0.5)
+MainFrame.Size             = UDim2.fromOffset(Config.PCWidth, Config.PCHeight)
+MainFrame.BackgroundColor3 = Theme.Backdrop
+MainFrame.BorderSizePixel  = 0
+MainFrame.Visible          = false
+MainFrame.ClipsDescendants = true
+MainFrame.Parent           = ScreenGui
+addCorner(MainFrame, 14)
+addStroke(MainFrame, Theme.Line, 0.3)
+
+local UIScaleObj = Instance.new("UIScale")
+UIScaleObj.Parent = MainFrame
+
+
+--[[ ----------------------------------------------------------------------------
+    TITLE BAR
+---------------------------------------------------------------------------- ]]
+TopBar = Instance.new("Frame")
+TopBar.Name             = "TopBar"
+TopBar.Size             = UDim2.new(1, 0, 0, 52)
+TopBar.BackgroundColor3 = Theme.Surface
+TopBar.BorderSizePixel  = 0
+TopBar.Parent           = MainFrame
+
+-- Square off the bottom corners: UICorner rounds all four, so a strip of the
+-- bar's own colour covers the two we do not want rounded.
+local topBarSquare = Instance.new("Frame")
+topBarSquare.Size             = UDim2.new(1, 0, 0, 14)
+topBarSquare.Position         = UDim2.new(0, 0, 1, -14)
+topBarSquare.BackgroundColor3 = Theme.Surface
+topBarSquare.BorderSizePixel  = 0
+topBarSquare.ZIndex           = 0
+topBarSquare.Parent           = TopBar
+addCorner(TopBar, 14)
+
+local titleWrap = Instance.new("Frame")
+titleWrap.BackgroundTransparency = 1
+titleWrap.Position               = UDim2.new(0, 14, 0, 9)
+titleWrap.Size                   = UDim2.new(1, -60, 1, -18)
+titleWrap.Parent                 = TopBar
+
+TitleLabel = Instance.new("TextLabel")
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text                   = "EGGS ESP"
+TitleLabel.TextSize               = Theme.TitleSize
+TitleLabel.TextColor3             = Theme.Text
+TitleLabel.Font                   = Enum.Font.GothamBold
+TitleLabel.TextXAlignment         = Enum.TextXAlignment.Left
+TitleLabel.Size                   = UDim2.new(1, 0, 0, 18)
+TitleLabel.Parent                 = titleWrap
+
+GameLabel = Instance.new("TextLabel")
+GameLabel.BackgroundTransparency = 1
+GameLabel.Text                   = "Ride A Pet  ·  v2.6"
+GameLabel.TextSize               = Theme.TinySize
+GameLabel.TextColor3             = Theme.TextFaint
+GameLabel.Font                   = Enum.Font.Gotham
+GameLabel.TextXAlignment         = Enum.TextXAlignment.Left
+GameLabel.Position               = UDim2.new(0, 0, 0, 18)
+GameLabel.Size                   = UDim2.new(1, 0, 0, 14)
+GameLabel.Parent                 = titleWrap
+
+AuthorLabel = GameLabel  -- kept so older references still resolve
+
+MinimizeBtn = Instance.new("TextButton")
+MinimizeBtn.AnchorPoint      = Vector2.new(1, 0.5)
+MinimizeBtn.Position         = UDim2.new(1, -12, 0.5, 0)
+MinimizeBtn.Size             = UDim2.fromOffset(28, 28)
+MinimizeBtn.BackgroundColor3 = Theme.Control
+MinimizeBtn.BorderSizePixel  = 0
+MinimizeBtn.Text             = "–"
+MinimizeBtn.TextSize         = 18
+MinimizeBtn.TextColor3       = Theme.Text
+MinimizeBtn.Font             = Enum.Font.GothamBold
+MinimizeBtn.Parent           = TopBar
+addCorner(MinimizeBtn, 8)
+makeInteractive(MinimizeBtn)
+
+
+--[[ ----------------------------------------------------------------------------
+    THE BODY
+    ----------------------------------------------------------------------------
+    A ScrollingFrame with AutomaticCanvasSize. This single object is the fix for
+    "the egg list is out of bounds": whatever the cards add up to, the body can
+    reach it. On a short phone screen the whole menu scrolls; on a desktop the
+    scrollbar never appears because nothing overflows.
+---------------------------------------------------------------------------- ]]
+ContentContainer = Instance.new("ScrollingFrame")
+ContentContainer.Name                   = "Body"
+ContentContainer.Position               = UDim2.new(0, 0, 0, 52)
+ContentContainer.Size                   = UDim2.new(1, 0, 1, -52)
+ContentContainer.BackgroundTransparency = 1
+ContentContainer.BorderSizePixel        = 0
+ContentContainer.ScrollBarThickness     = 3
+ContentContainer.ScrollBarImageColor3   = Theme.Line
+ContentContainer.CanvasSize             = UDim2.new()
+ContentContainer.AutomaticCanvasSize    = Enum.AutomaticSize.Y
+ContentContainer.ScrollingDirection     = Enum.ScrollingDirection.Y
+ContentContainer.Parent                 = MainFrame
+addPadding(ContentContainer, Theme.Pad, Theme.Pad)
+addVStack(ContentContainer, Theme.Gap + 1)
+
+
+--[[ ----------------------------------------------------------------------------
+    CARD 1  --  STATUS
+---------------------------------------------------------------------------- ]]
+local statusStack = makeCard(ContentContainer, "Status", 1)
+
+local statusRow = Instance.new("Frame")
+statusRow.BackgroundTransparency = 1
+statusRow.Size                   = UDim2.new(1, 0, 0, 22)
+statusRow.LayoutOrder            = 1
+statusRow.Parent                 = statusStack
+
+StatusLabel = Instance.new("TextLabel")
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text                   = "● System ready"
+StatusLabel.TextSize               = Theme.SmallSize
+StatusLabel.TextColor3             = Theme.Good
+StatusLabel.Font                   = Enum.Font.GothamMedium
+StatusLabel.TextXAlignment         = Enum.TextXAlignment.Left
+StatusLabel.TextTruncate           = Enum.TextTruncate.AtEnd
+StatusLabel.Size                   = UDim2.new(1, -96, 1, 0)
+StatusLabel.Parent                 = statusRow
+
+StopAutoFarmBtn = Instance.new("TextButton")
+StopAutoFarmBtn.AnchorPoint      = Vector2.new(1, 0.5)
+StopAutoFarmBtn.Position         = UDim2.new(1, 0, 0.5, 0)
+StopAutoFarmBtn.Size             = UDim2.fromOffset(92, 22)
+StopAutoFarmBtn.BackgroundColor3 = Theme.Bad
+StopAutoFarmBtn.BorderSizePixel  = 0
+StopAutoFarmBtn.Text             = "■ Stop farm"
+StopAutoFarmBtn.TextSize         = Theme.TinySize
+StopAutoFarmBtn.TextColor3       = Color3.fromRGB(255, 255, 255)
+StopAutoFarmBtn.Font             = Enum.Font.GothamBold
+StopAutoFarmBtn.Visible          = false
+StopAutoFarmBtn.Parent           = statusRow
+addCorner(StopAutoFarmBtn, 6)
+makeInteractive(StopAutoFarmBtn, Theme.Bad, Color3.fromRGB(255, 130, 130), Color3.fromRGB(200, 70, 70))
+
+
+--[[ ----------------------------------------------------------------------------
+    CARD 2  --  MOVEMENT
+---------------------------------------------------------------------------- ]]
+local movementStack = makeCard(ContentContainer, "Movement", 2)
+
+ModeAutoFarmBtn, ModeTeleportBtn = makeSegmented(movementStack, "Fly + Noclip", "Instant TP", 1)
+
+local movementHint = makeLabel(
+    movementStack,
+    "The Rare Egg Hunter always flies, whichever is selected.",
+    Theme.TinySize, Theme.TextFaint, 2
+)
+movementHint.TextWrapped = true
+movementHint.Size        = UDim2.new(1, 0, 0, 26)  -- two lines at this width
+
+TPHomeBtn = makeButton(movementStack, "Teleport to my plot", 3)
+
+KeybindBtn = Instance.new("TextButton")
+KeybindBtn.Size            = UDim2.new(1, 0, 0, 26)
+KeybindBtn.BorderSizePixel = 0
+KeybindBtn.Text            = "Hotkey: [T]"
+KeybindBtn.TextSize        = Theme.SmallSize
+KeybindBtn.TextColor3      = Theme.TextDim
+KeybindBtn.Font            = Enum.Font.Gotham
+KeybindBtn.LayoutOrder     = 4
+KeybindBtn.Parent          = movementStack
+addCorner(KeybindBtn, 6)
+makeInteractive(KeybindBtn, Theme.Raised, Theme.Control, Theme.Surface)
+
+
+--[[ ----------------------------------------------------------------------------
+    CARD 3  --  AUTOMATION
+    ----------------------------------------------------------------------------
+    Four switches. Adding a fifth is one makeToggle call -- no offsets to
+    recompute, no window height to grow.
+---------------------------------------------------------------------------- ]]
+local autoStack = makeCard(ContentContainer, "Automation", 3)
+
+local espToggle = makeToggle(autoStack, "ESP: all eggs",
+    "Yellow highlight and live distance", 1, Theme.Accent)
+
+AutoBestEggToggle = makeToggle(autoStack, "Auto Best Egg",
+    "Farms " .. Config.BestEggName .. " on a loop", 2, Theme.Good)
+
+AutoRareToggle = makeToggle(autoStack, "Rare Egg Hunter",
+    "Blackhole / Cherub, paced to stay safe", 3, Theme.Rare)
+
+local fxToggle = makeToggle(autoStack, "Screen alerts",
+    "Flash the screen when a rare egg spawns", 4, Theme.Warn)
+-- Config.ScreenFXEnabled decides the starting position, so the switch and the
+-- flag can never disagree on the very first frame.
+fxToggle.set(screenFXEnabled)
+
+
+--[[ ----------------------------------------------------------------------------
+    CARD 4  --  THE EGG LIST
+---------------------------------------------------------------------------- ]]
+local listStack = makeCard(ContentContainer, "Eggs in world", 4)
+
+local listHeader = Instance.new("Frame")
+listHeader.BackgroundTransparency = 1
+listHeader.Size                   = UDim2.new(1, 0, 0, 20)
+listHeader.LayoutOrder            = 1
+listHeader.Parent                 = listStack
+
+EggCountLabel = Instance.new("TextLabel")
+EggCountLabel.BackgroundTransparency = 1
+EggCountLabel.Text                   = "0 eggs  ·  0 shown"
+EggCountLabel.TextSize               = Theme.TinySize
+EggCountLabel.TextColor3             = Theme.TextDim
+EggCountLabel.Font                   = Enum.Font.Gotham
+EggCountLabel.TextXAlignment         = Enum.TextXAlignment.Left
+EggCountLabel.Size                   = UDim2.new(1, -80, 1, 0)
+EggCountLabel.Parent                 = listHeader
+
+ToggleListBtn = Instance.new("TextButton")
+ToggleListBtn.AnchorPoint      = Vector2.new(1, 0.5)
+ToggleListBtn.Position         = UDim2.new(1, 0, 0.5, 0)
+ToggleListBtn.Size             = UDim2.fromOffset(72, 20)
+ToggleListBtn.BorderSizePixel  = 0
+ToggleListBtn.Text             = "Hide ▲"
+ToggleListBtn.TextSize         = Theme.TinySize
+ToggleListBtn.TextColor3       = Theme.TextDim
+ToggleListBtn.Font             = Enum.Font.GothamMedium
+ToggleListBtn.Parent           = listHeader
+addCorner(ToggleListBtn, 6)
+makeInteractive(ToggleListBtn, Theme.Raised, Theme.Control, Theme.Surface)
+
+ListContainerFrame = Instance.new("Frame")
+ListContainerFrame.Name                   = "ListBody"
+ListContainerFrame.BackgroundTransparency = 1
+ListContainerFrame.Size                   = UDim2.new(1, 0, 0, 0)
+ListContainerFrame.AutomaticSize          = Enum.AutomaticSize.Y
+ListContainerFrame.LayoutOrder            = 2
+ListContainerFrame.Parent                 = listStack
+addVStack(ListContainerFrame, 6)
+
+local controlsRow = Instance.new("Frame")
+controlsRow.BackgroundTransparency = 1
+controlsRow.Size                   = UDim2.new(1, 0, 0, 26)
+controlsRow.LayoutOrder            = 1
+controlsRow.Parent                 = ListContainerFrame
+
+RefreshBtn = Instance.new("TextButton")
+RefreshBtn.Size            = UDim2.new(0.5, -3, 1, 0)
+RefreshBtn.BorderSizePixel = 0
+RefreshBtn.Text            = "↻ Refresh"
+RefreshBtn.TextSize        = Theme.SmallSize
+RefreshBtn.TextColor3      = Theme.Text
+RefreshBtn.Font            = Enum.Font.GothamMedium
+RefreshBtn.Parent          = controlsRow
+addCorner(RefreshBtn, 6)
+makeInteractive(RefreshBtn, Theme.Raised, Theme.Control, Theme.Surface)
+
+SortBtn = Instance.new("TextButton")
+SortBtn.Position        = UDim2.new(0.5, 3, 0, 0)
+SortBtn.Size            = UDim2.new(0.5, -3, 1, 0)
+SortBtn.BorderSizePixel = 0
+SortBtn.Text            = "Sort: Name"
+SortBtn.TextSize        = Theme.SmallSize
+SortBtn.TextColor3      = Theme.Text
+SortBtn.Font            = Enum.Font.GothamMedium
+SortBtn.Parent          = controlsRow
+addCorner(SortBtn, 6)
+makeInteractive(SortBtn, Theme.Raised, Theme.Control, Theme.Surface)
+
+SearchBox = Instance.new("TextBox")
+SearchBox.Size                   = UDim2.new(1, 0, 0, 28)
+SearchBox.BackgroundColor3       = Theme.Raised
+SearchBox.BorderSizePixel        = 0
+SearchBox.PlaceholderText        = "Search eggs…"
+SearchBox.PlaceholderColor3      = Theme.TextFaint
+SearchBox.Text                   = ""
+SearchBox.TextSize               = Theme.SmallSize
+SearchBox.TextColor3             = Theme.Text
+SearchBox.Font                   = Enum.Font.Gotham
+SearchBox.TextXAlignment         = Enum.TextXAlignment.Left
+SearchBox.ClearTextOnFocus       = false
+SearchBox.LayoutOrder            = 2
+SearchBox.Parent                 = ListContainerFrame
+addCorner(SearchBox, 6)
+addPadding(SearchBox, 0, 9)
+
+ScrollList = Instance.new("ScrollingFrame")
+ScrollList.Name                   = "Rows"
+ScrollList.Size                   = UDim2.new(1, 0, 0, 176)
+ScrollList.BackgroundTransparency = 1
+ScrollList.BorderSizePixel        = 0
+ScrollList.ScrollBarThickness     = 3
+ScrollList.ScrollBarImageColor3   = Theme.Line
+ScrollList.CanvasSize             = UDim2.new()
+ScrollList.AutomaticCanvasSize    = Enum.AutomaticSize.Y
+ScrollList.ScrollingDirection     = Enum.ScrollingDirection.Y
+ScrollList.LayoutOrder            = 3
+ScrollList.Parent                 = ListContainerFrame
+
+UIListLayout = Instance.new("UIListLayout")
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding   = UDim.new(0, 4)
+UIListLayout.Parent    = ScrollList
+
+
+--[[ ----------------------------------------------------------------------------
+    THE DEVICE PICKER
+---------------------------------------------------------------------------- ]]
+DeviceFrame = Instance.new("Frame")
+DeviceFrame.Name             = "DevicePicker"
+DeviceFrame.AnchorPoint      = Vector2.new(0.5, 0.5)
+DeviceFrame.Position         = UDim2.fromScale(0.5, 0.5)
+DeviceFrame.Size             = UDim2.fromOffset(250, 172)
+DeviceFrame.BackgroundColor3 = Theme.Backdrop
+DeviceFrame.BorderSizePixel  = 0
+DeviceFrame.Parent           = ScreenGui
+addCorner(DeviceFrame, 14)
+addStroke(DeviceFrame, Theme.Line, 0.3)
+addPadding(DeviceFrame, 16)
+
+local pickerTitle = makeLabel(DeviceFrame, "Choose your device", Theme.BodySize, Theme.Text, 1)
+pickerTitle.Font = Enum.Font.GothamBold
+pickerTitle.Size = UDim2.new(1, 0, 0, 20)
+
+local pickerHint = makeLabel(DeviceFrame, "Only changes the window size.", Theme.TinySize, Theme.TextFaint, 2)
+pickerHint.Position = UDim2.new(0, 0, 0, 22)
+
+PCBtn = Instance.new("TextButton")
+PCBtn.Position         = UDim2.new(0, 0, 0, 52)
+PCBtn.Size             = UDim2.new(1, 0, 0, 34)
+PCBtn.BorderSizePixel  = 0
+PCBtn.Text             = "PC"
+PCBtn.TextSize         = Theme.BodySize
+PCBtn.TextColor3       = Theme.Text
+PCBtn.Font             = Enum.Font.GothamMedium
+PCBtn.Parent           = DeviceFrame
+addCorner(PCBtn, Theme.RadiusSm)
+makeInteractive(PCBtn)
+
+MobileBtn = Instance.new("TextButton")
+MobileBtn.Position         = UDim2.new(0, 0, 0, 92)
+MobileBtn.Size             = UDim2.new(1, 0, 0, 34)
+MobileBtn.BorderSizePixel  = 0
+MobileBtn.Text             = "Mobile"
+MobileBtn.TextSize         = Theme.BodySize
+MobileBtn.TextColor3       = Theme.Text
+MobileBtn.Font             = Enum.Font.GothamMedium
+MobileBtn.Parent           = DeviceFrame
+addCorner(MobileBtn, Theme.RadiusSm)
+makeInteractive(MobileBtn)
+
+
+--[[ ============================================================================
+    SECTION 20  --  ONE ROW OF THE EGG LIST
+    ----------------------------------------------------------------------------
+    [icon] [name .....................] [45m] [TP] [FARM] [ESP]
+
+    v2.6 changed how this is measured. The old row positioned its three buttons
+    at x-scale 1 with offsets of -148, -107 and -48 -- three magic numbers that
+    had to stay in sync with each other, with the distance label, and with the
+    name label's width. Change one button's width and the row silently overlaps.
+
+    Now the right-hand group is one frame anchored to the right edge with its own
+    horizontal layout, and the name simply takes whatever is left. The widths are
+    named constants at the top, so the arithmetic is stated once.
+============================================================================ ]]
+local ROW_ICON = 24
+local ROW_DIST = 42
+local ROW_BTNS = 116   -- 32 + 44 + 32 + the padding between them
+
+local function createEggListItem(egg, itemHeight, textSize)
+    -- On a phone the row is ~250px wide. Spending 42 of them on a distance the
+    -- floating billboard is already showing leaves the egg name unreadable, so
+    -- the column is dropped rather than squeezed.
+    local showDistance = not isMobileMode
+    local rightWidth   = ROW_BTNS + (showDistance and (ROW_DIST + 6) or 0)
+    local row = Instance.new("Frame")
+    row.Name             = "Row_" .. egg.Name
+    row.Size             = UDim2.new(1, -6, 0, itemHeight)
+    row.BackgroundColor3 = Theme.Raised
+    row.BorderSizePixel  = 0
+    row.Parent           = ScrollList
+    addCorner(row, 6)
+    addPadding(row, 0, 6)
+
+    local icon = Instance.new("ImageLabel")
+    icon.AnchorPoint            = Vector2.new(0, 0.5)
+    icon.Position               = UDim2.new(0, 0, 0.5, 0)
+    icon.Size                   = UDim2.fromOffset(ROW_ICON, ROW_ICON)
+    icon.BackgroundTransparency = 1
+    icon.ScaleType              = Enum.ScaleType.Fit
+    icon.Image                  = getEggImage(egg.Name)
+    icon.Parent                 = row
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Position               = UDim2.new(0, ROW_ICON + 8, 0, 0)
+    nameLabel.Size                   = UDim2.new(1, -(ROW_ICON + 8 + rightWidth + 6), 1, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text                   = egg.Name
+    nameLabel.TextColor3             = Theme.Text
+    nameLabel.TextSize               = textSize
+    nameLabel.Font                   = Enum.Font.GothamMedium
+    nameLabel.TextXAlignment         = Enum.TextXAlignment.Left
+    nameLabel.TextTruncate           = Enum.TextTruncate.AtEnd
+    nameLabel.Parent                 = row
+
+    local rightGroup = Instance.new("Frame")
+    rightGroup.AnchorPoint            = Vector2.new(1, 0.5)
+    rightGroup.Position               = UDim2.new(1, 0, 0.5, 0)
+    rightGroup.Size                   = UDim2.fromOffset(rightWidth, itemHeight - 8)
+    rightGroup.BackgroundTransparency = 1
+    rightGroup.Parent                 = row
+    addHStack(rightGroup, 4, true)
+
+    local distanceLabel = Instance.new("TextLabel")
+    distanceLabel.Visible                = showDistance
+    distanceLabel.Size                   = UDim2.new(0, showDistance and ROW_DIST or 0, 1, 0)
+    distanceLabel.BackgroundTransparency = 1
+    distanceLabel.TextColor3             = Theme.TextFaint
+    distanceLabel.TextSize               = Theme.TinySize
+    distanceLabel.Font                   = Enum.Font.Gotham
+    distanceLabel.TextXAlignment         = Enum.TextXAlignment.Right
+    distanceLabel.Text                   = "--"
+    distanceLabel.LayoutOrder            = 1
+    distanceLabel.Parent                 = rightGroup
+
+    -- The refresh loop in Section 24 rewrites this five times a second. A row
+    -- with no visible distance column is not registered at all, so the loop does
+    -- not spend work writing text nobody can see.
+    if showDistance then
+        listDistanceLabels[egg] = distanceLabel
+        local distance = getDistanceToTarget(egg)
+        if distance ~= math.huge then
+            distanceLabel.Text = string.format("%dm", math.floor(distance + 0.5))
+        end
+    end
+
+    local function smallButton(text, width, order, color)
+        local button = Instance.new("TextButton")
+        button.Size            = UDim2.fromOffset(width, itemHeight - 10)
+        button.BorderSizePixel = 0
+        button.Text            = text
+        button.TextSize        = Theme.TinySize
+        button.TextColor3      = color or Theme.Text
+        button.Font            = Enum.Font.GothamBold
+        button.LayoutOrder     = order
+        button.Parent          = rightGroup
+        addCorner(button, 5)
+        makeInteractive(button, Theme.Control, Theme.Line, Theme.Surface)
+        return button
+    end
+
+    --------------------------------------------------------------------------
+    -- TP: obeys the movement mode switch (v2.4 fixed this; v2.3 always jumped)
+    --------------------------------------------------------------------------
+    local TPBtn = smallButton("TP", 32, 2, Theme.Accent)
+    TPBtn.MouseButton1Click:Connect(function()
+        if not egg.Parent then return end
+        if moveToModel(egg) then
+            setStatus("● Moved to " .. egg.Name)
+        end
+    end)
+
+    --------------------------------------------------------------------------
+    -- FARM: queues the egg's NAME, so future spawns of the type are farmed too
+    --------------------------------------------------------------------------
+    local AutoFarmBtn = smallButton("FARM", 44, 3)
+    setAutoFarmButtonState(AutoFarmBtn, autoFarmEggs[egg.Name] == true)
+
+    AutoFarmBtn.MouseButton1Click:Connect(function()
+        if not egg.Parent then return end
+
+        local name = egg.Name
+        autoFarmEggs[name] = not autoFarmEggs[name] or nil
+
+        -- Clear the skip-list for this name, so re-queuing a type you had
+        -- already farmed lets those objects be collected again.
+        for processedEgg in pairs(autoFarmProcessed) do
+            if processedEgg and processedEgg.Name == name then
+                autoFarmProcessed[processedEgg] = nil
+            end
+        end
+
+        setAutoFarmButtonState(AutoFarmBtn, autoFarmEggs[name] == true)
+
+        if autoFarmEggs[name] then
+            setStatus("● Queued " .. name)
+            if not autoFarmActive then
+                startAutoFarm()
+            end
+        else
+            setStatus("● Unqueued " .. name, Theme.TextDim)
+            if next(autoFarmEggs) == nil then
+                stopAutoFarm()
+            end
+        end
+    end)
+
+    --------------------------------------------------------------------------
+    -- ESP: per-egg green highlight, which outranks the global yellow one
+    --------------------------------------------------------------------------
+    local data = eggData[egg]
+    local GreenESPBtn = smallButton("ESP", 32, 4, Theme.Good)
+    if data and data.CustomActive then
+        GreenESPBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    end
+
+    GreenESPBtn.MouseButton1Click:Connect(function()
+        if not egg.Parent then return end
+
+        if not eggData[egg] then
+            eggData[egg] = {
+                Highlight     = nil,
+                NameBillboard = nil,
+                CustomColor   = Config.CustomESPColor,
+                CustomActive  = false,
+            }
+        end
+
+        local record = eggData[egg]
+        record.CustomActive = not record.CustomActive
+        GreenESPBtn.TextColor3 = record.CustomActive and Color3.fromRGB(255, 255, 255) or Theme.Good
+        setStatus(record.CustomActive
+            and ("● ESP on " .. egg.Name)
+            or  "● ESP off")
+
+        updateEggESP(egg)  -- one source of truth re-derives the visuals
+    end)
+end
+
+
+--[[ ============================================================================
+    SECTION 21  --  POPULATING THE LIST
+============================================================================ ]]
+local function getEggsForList()
+    local entries = {}
+    if not RenderedEggsFolder then
+        return entries
+    end
+
+    for _, egg in ipairs(RenderedEggsFolder:GetChildren()) do
+        if egg:IsA("Model") or egg:IsA("BasePart") then
+            -- Measured once, up front. Measuring inside the comparator lets the
+            -- value change mid-sort, and Lua raises "invalid order function for
+            -- sorting" when it does -- thrown out of populateList.
+            table.insert(entries, { egg = egg, distance = getDistanceToTarget(egg) })
+        end
+    end
+
+    table.sort(entries, function(a, b)
+        if sortMode == "Distance" then
+            if a.distance == b.distance then
+                return a.egg.Name:lower() < b.egg.Name:lower()
+            end
+            return a.distance < b.distance
+        end
+        return a.egg.Name:lower() < b.egg.Name:lower()
+    end)
+
+    local eggs = {}
+    for index, entry in ipairs(entries) do
+        eggs[index] = entry.egg
+    end
+    return eggs
+end
+
+local function clearEggList()
+    for _, child in ipairs(ScrollList:GetChildren()) do
+        if child ~= UIListLayout then
+            child:Destroy()
+        end
+    end
+    table.clear(listDistanceLabels)
+end
+
+local function populateList()
+    clearEggList()
+
+    if not RenderedEggsFolder then
+        EggCountLabel.Text = "0 eggs  ·  0 shown"
+        return
+    end
+
+    local query        = currentSearchQuery:lower()
+    local eggs         = getEggsForList()
+    local visibleCount = 0
+    local itemHeight   = isMobileMode and 32 or 34
+    local textSize     = isMobileMode and 11 or 12
+
+    for _, egg in ipairs(eggs) do
+        -- Plain find (4th arg true): a "-" or "(" in an egg name cannot be read
+        -- as Lua pattern syntax and break the search.
+        local matches = query == "" or string.find(egg.Name:lower(), query, 1, true)
+        if matches then
+            visibleCount += 1
+            createEggListItem(egg, itemHeight, textSize)
+        end
+    end
+
+    EggCountLabel.Text = string.format("%d eggs  ·  %d shown", #eggs, visibleCount)
+
+    if visibleCount == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Name                   = "NoResultsLabel"
+        empty.Size                   = UDim2.new(1, -6, 0, 34)
+        empty.BackgroundTransparency = 1
+        empty.Text                   = query == "" and "No eggs in the world right now"
+                                       or ("Nothing matching \"" .. currentSearchQuery .. "\"")
+        empty.TextColor3             = Theme.TextFaint
+        empty.TextSize               = Theme.SmallSize
+        empty.Font                   = Enum.Font.Gotham
+        empty.Parent                 = ScrollList
+    end
+end
+
+-- Debounced rebuild. The spawn/despawn events fire in bursts on a busy server,
+-- and a full teardown per event costs frames -- frames the flight loop needs,
+-- because it steps by delta time and takes huge imprecise jumps when the frame
+-- rate collapses.
+local listRebuildQueued = false
+
+local function requestListRebuild()
+    if listRebuildQueued then return end
+    listRebuildQueued = true
+    task.delay(Config.ListRebuildDebounce, function()
+        listRebuildQueued = false
+        if ListContainerFrame.Visible then
+            populateList()
+        end
+    end)
+end
+
+
+--[[ ============================================================================
+    SECTION 22  --  WIRING THE CONTROLS
+============================================================================ ]]
+
+-- Search. GetPropertyChangedSignal("Text") fires on every keystroke, which is
+-- what makes filtering feel live; the equality guard skips rebuilds for changes
+-- that leave the text identical.
+SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    if SearchBox.Text == currentSearchQuery then return end
+    currentSearchQuery = SearchBox.Text
+    populateList()
+end)
+
+RefreshBtn.MouseButton1Click:Connect(function()
+    populateList()
+    updateAllESP()
+    setStatus("● List refreshed")
+end)
+
+SortBtn.MouseButton1Click:Connect(function()
+    sortMode     = sortMode == "Name" and "Distance" or "Name"
+    SortBtn.Text = "Sort: " .. sortMode
+    populateList()
+end)
+
+ToggleListBtn.MouseButton1Click:Connect(function()
+    ListContainerFrame.Visible = not ListContainerFrame.Visible
+    ToggleListBtn.Text = ListContainerFrame.Visible and "Hide ▲" or "Show ▼"
+    if ListContainerFrame.Visible then
+        populateList()
+    end
+end)
+
+-- ESP for every egg.
+espToggle.Row.MouseButton1Click:Connect(function()
+    local active = not espToggle.get()
+    espToggle.set(active)
+    applyGlobalESP(active)
+    setStatus(active and "● ESP on for every egg" or "● ESP off",
+        active and Theme.Accent or Theme.TextDim)
+end)
+
+-- Auto Best Egg. start/stop repaint the switch themselves, so that a mode
+-- switched off by another mode starting still shows the truth.
+AutoBestEggToggle.Row.MouseButton1Click:Connect(function()
+    if autoBestEggActive then
+        stopAutoBestEgg()
+        setStatus("● System ready")
+    else
+        startAutoBestEgg()
+        setStatus("● Auto Best Egg running")
+    end
+end)
+
+-- Rare Egg Hunter.
+AutoRareToggle.Row.MouseButton1Click:Connect(function()
+    if autoRareActive then
+        stopAutoRare()
+        ScreenFX.stop()
+        setStatus("● System ready")
+    else
+        startAutoRare()
+        setStatus(string.format("● Rare Egg Hunter armed · %ds safety window",
+            Config.SafeCycleMin), Theme.Rare)
+    end
+end)
+
+-- Screen alerts. Flashing one preview on switch-on is deliberate: an alert you
+-- have never seen is an alert you will not recognise at the moment it fires.
+fxToggle.Row.MouseButton1Click:Connect(function()
+    screenFXEnabled = not screenFXEnabled
+    fxToggle.set(screenFXEnabled)
+    if screenFXEnabled then
+        setStatus("● Screen alerts on", Theme.Warn)
+        ScreenFX.armed()
+    else
+        ScreenFX.stop()
+        setStatus("● Screen alerts off", Theme.TextDim)
+    end
+end)
+
+TPHomeBtn.MouseButton1Click:Connect(function()
+    if teleportToHomePlot() then
+        setStatus(movementMode == "AutoFarm" and "● Flew home" or "● Teleported home")
+    else
+        setStatus("● Your plot was not found", Theme.Bad)
+    end
+end)
+
+StopAutoFarmBtn.MouseButton1Click:Connect(function()
+    stopAutoFarm()
+    StopAutoFarmBtn.Visible = false
+    setStatus("● AutoFarm stopped", Theme.TextDim)
+end)
+
+ModeAutoFarmBtn.MouseButton1Click:Connect(function()
+    setMovementMode("AutoFarm")
+end)
+
+ModeTeleportBtn.MouseButton1Click:Connect(function()
+    setMovementMode("Teleport")
+end)
+
+-- Keybind capture. The actual key handling lives in Section 23.
+KeybindBtn.MouseButton1Click:Connect(function()
+    listeningForKey  = true
+    KeybindBtn.Text  = "Press any key…"
+    KeybindBtn.TextColor3 = Theme.Warn
+end)
+
+updateMovementModeButtons()
+
+
+--[[ ----------------------------------------------------------------------------
+    MINIMISE
+    ----------------------------------------------------------------------------
+    Hiding ONE frame hides the whole body, because every card lives inside
+    ContentContainer. The delay before showing it again stops the content
+    visibly overflowing the still-growing window for a few frames.
+---------------------------------------------------------------------------- ]]
+MinimizeBtn.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+
+    if isMinimized then
+        ContentContainer.Visible = false
+        tween(MainFrame, { Size = UDim2.fromOffset(currentExpandedWidth, 52) }, 0.2)
+        MinimizeBtn.Text = "+"
+    else
+        tween(MainFrame, {
+            Size = UDim2.fromOffset(currentExpandedWidth, currentExpandedHeight)
+        }, 0.2)
+        task.delay(0.12, function()
+            if not isMinimized then
+                ContentContainer.Visible = true
+            end
+        end)
+        MinimizeBtn.Text = "–"
+    end
+end)
+
+
+--[[ ----------------------------------------------------------------------------
+    DRAGGING
+    ----------------------------------------------------------------------------
+    The classic three-signal pattern. The movement is applied from the GLOBAL
+    UserInputService signal, not the title bar's own, because a fast drag moves
+    the pointer off the bar and the bar would stop receiving events mid-drag.
+---------------------------------------------------------------------------- ]]
+local dragging      = false
+local dragInput     = nil
+local dragStart     = nil
+local startPosition = nil
+
+TopBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging      = true
+        dragStart     = input.Position
+        startPosition = MainFrame.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+TopBar.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+
+
+--[[ ============================================================================
+    SECTION 23  --  KEYBOARD
+    ----------------------------------------------------------------------------
+    Two things worth remembering here:
+
+      1. The rebind branch comes FIRST and returns immediately, so while you are
+         rebinding the key is swallowed and stored rather than acted on.
+      2. gameProcessed is true when Roblox already consumed the key -- above all
+         when you are typing in a TextBox or the chat. Without that check,
+         typing "t" into the search box would teleport you home. Forgetting
+         gameProcessed is the most common bug in Roblox hotkey code.
+============================================================================ ]]
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if listeningForKey then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            tpKeybind             = input.KeyCode
+            listeningForKey       = false
+            KeybindBtn.Text       = "Hotkey: [" .. tpKeybind.Name .. "]"
+            KeybindBtn.TextColor3 = Theme.TextDim
+        end
+        return
+    end
+
+    if gameProcessed then return end
+
+    if input.UserInputType == Enum.UserInputType.Keyboard
+        and input.KeyCode == tpKeybind then
+        teleportToHomePlot()
+    end
+end)
+
+
+--[[ ============================================================================
+    SECTION 24  --  THE REFRESH LOOP
+    ----------------------------------------------------------------------------
+    Runs at 5 Hz, not per frame. Distances only need to LOOK live; recomputing
+    them sixty times a second costs twelve times more for no visible benefit.
+
+    "while ScreenGui.Parent" makes the loop die with the menu, so re-executing
+    the script does not leave old loops running forever.
+============================================================================ ]]
+task.spawn(function()
+    while ScreenGui.Parent do
+        for egg, data in pairs(eggData) do
+            if egg.Parent and data.NameBillboard and data.NameBillboard.Enabled then
+                updateEggLabel(egg)
+            end
+        end
+
+        for egg, label in pairs(listDistanceLabels) do
+            if egg.Parent and label.Parent then
+                local distance = getDistanceToTarget(egg)
+                label.Text = distance == math.huge
+                    and "--"
+                    or string.format("%dm", math.floor(distance + 0.5))
+            else
+                listDistanceLabels[egg] = nil
+            end
+        end
+
+        task.wait(Config.ListRefreshRate)
+    end
+end)
+
+
+--[[ ============================================================================
+    SECTION 25  --  WORLD EVENTS
+============================================================================ ]]
+if RenderedEggsFolder then
+    RenderedEggsFolder.ChildAdded:Connect(function(egg)
+        autoFarmProcessed[egg] = nil  -- brand new instance, so farmable again
+        task.wait(0.05)               -- let the model finish loading
+        updateEggESP(egg)
+        requestListRebuild()
+    end)
+
+    RenderedEggsFolder.ChildRemoved:Connect(function(egg)
+        removeEggData(egg)
+        requestListRebuild()
+    end)
+
+    -- Catch up on everything that already existed at startup; events only tell
+    -- you about the future, never the present.
+    for _, egg in ipairs(RenderedEggsFolder:GetChildren()) do
+        updateEggESP(egg)
+    end
+end
+
+--[[ Respawn recovery. Dying mid-flight used to poison the rest of the session:
+     movementActive could be left true, and a true movementActive makes every
+     later move return false immediately -- the farm keeps running, flies
+     nowhere and collects nothing.
+
+     The automation loops are deliberately NOT stopped here. Dying does not mean
+     you wanted to stop farming, and every loop re-checks its flags and
+     re-validates its target after each yield, so they pick up the new character
+     on their own. ]]
+LocalPlayer.CharacterAdded:Connect(function()
+    movementActive     = false
+    movementHumanoid   = nil
+    movementAutoRotate = nil
+    movementPartsState = nil  -- the old snapshot points at destroyed parts
+    pinToken += 1             -- release any pin loop the old character was under
+    cachedHomePlot     = nil
+    releaseEKey()
+end)
+
+
+--[[ ============================================================================
+    SECTION 26  --  DEVICE SIZING AND ENTRY POINT
+    ----------------------------------------------------------------------------
+    This replaces v2.5's setPCMode and setMobileMode, which were 120 lines of
+    duplicated pixel offsets between them. There is one layout now; the device
+    choice only picks a size and a scale.
+
+    The clamp against the camera's viewport is what guarantees the window opens
+    fully on screen, whatever the device -- including the case the old code got
+    wrong, where a phone shorter than MobileHeight simply lost the bottom of the
+    menu off the edge of the display.
+============================================================================ ]]
+local function applyDevice(mobile)
+    isMobileMode = mobile
+
+    local camera   = Workspace.CurrentCamera
+    local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+
+    local width  = math.min(mobile and Config.MobileWidth  or Config.PCWidth,  viewport.X - 24)
+    local height = math.min(mobile and Config.MobileHeight or Config.PCHeight, viewport.Y - 48)
+
+    currentExpandedWidth  = width
+    currentExpandedHeight = height
+
+    MainFrame.Size     = UDim2.fromOffset(width, height)
+    MainFrame.Position = UDim2.fromScale(0.5, 0.5)
+    UIScaleObj.Scale   = mobile and 0.94 or 1
+
+    -- The list gets a fixed viewport of its own; the body scrolls if the cards
+    -- above it do not leave room.
+    ScrollList.Size = UDim2.new(1, 0, 0, mobile and 148 or 188)
+
+    if DeviceFrame then
+        DeviceFrame:Destroy()
+        DeviceFrame = nil
+    end
+
+    MainFrame.Visible = true
+    populateList()
+    setStatus("● System ready")
+end
+
+PCBtn.MouseButton1Click:Connect(function()
+    applyDevice(false)
+end)
+
+MobileBtn.MouseButton1Click:Connect(function()
+    applyDevice(true)
+end)
+
+
+end  -- interface block
+
+
+print("[Eggs ESP v2.6] Loaded successfully.")
+
+
+--[[ ============================================================================
+
+    APPENDIX A0  --  WHAT v2.6 CHANGED
+    ----------------------------------------------------------------------------
+     1. The egg list rendered outside the window. Cause: every widget was placed
+        at a hard-coded pixel offset, and nothing verified the last one still
+        fitted inside the frame. Fixed structurally, not by re-tuning numbers:
+        layouts derive each position from the elements above it, cards size to
+        their content, and the body scrolls when the content is taller than the
+        window.
+     2. setPCMode / setMobileMode were 120 lines of duplicated offsets that
+        drifted apart. Replaced by applyDevice: one size, one UIScale.
+     3. The window could open off the edge of a small screen. Now clamped to the
+        camera's viewport.
+     4. Adding one control used to mean editing eleven numbers across two layout
+        functions plus the window height. It is now one makeToggle call.
+     5. Toggle state lived in button text set by the click handler, so a mode
+        switched off by another mode starting kept claiming it was ON. State now
+        flows through switch handles that start/stop repaint.
+     6. The per-row FARM button signalled state with its background colour, which
+        the hover animation overwrote. It uses the text colour now.
+     7. Added: full-screen alerts for the Rare Egg Hunter, colour-coded per egg
+        type, with their own switch.
+
+    ----------------------------------------------------------------------------
+    APPENDIX A  --  WHAT v2.4 FIXED
+    ----------------------------------------------------------------------------
+    Every item here was a real defect in v2.3. The first five are the ones that
+    made farming unreliable; the rest are correctness and cost.
+
+    CONSISTENCY
+     1. Flight momentum was never cleared, so switching collisions back on flung
+        the character off the egg.                     -> zeroVelocity, Section 11
+     2. Nothing held the character in place during the E hold, so gravity pulled
+        it out of prompt range mid-interaction.        -> pinRoot, Section 11
+     3. Eggs were marked "processed" without any check that the pickup worked, so
+        a failure was skipped forever, never retried.  -> collectEgg, Section 15
+     4. Interaction was E-key only, at the mercy of HoldDuration and dropped key
+        events.                                        -> interactWith, Section 15
+     5. AutoFarm quit on the first pass where every queued egg happened to be
+        despawned, i.e. seconds after starting.        -> idlePasses, Section 16
+
+    TARGETING
+     6. The flight destination was snapshotted before take-off, so a target that
+        moved or finished streaming in was flown past. -> re-read each frame
+     7. AutoFarm collected in alphabetical order, criss-crossing the map; long
+        flights are the ones that time out.            -> nearest-first
+     8. Auto Best Egg took the first matching egg in the folder, not the closest.
+     9. Arrival radius of 2 studs is smaller than one frame's step at 500 studs/s
+        on a low frame rate, so the loop could orbit its target until timeout.
+    10. A blocked path always burned the full timeout. -> StuckTimeout
+
+    STATE AND LIFECYCLE
+    11. Dying mid-flight left movementActive true, which silently disabled every
+        later move for the rest of the session.        -> CharacterAdded reset
+    12. Cancelling a farm during an interaction left the character pinned in
+        place forever.                                 -> pinToken generation
+    13. stopMovement forced AutoRotate back to true instead of restoring it.
+    14. Teleport mode bypassed the one-move-at-a-time lock entirely.
+    15. autoFarmProcessed was never cleared in removeEggData -- a slow leak.
+
+    CORRECTNESS AND COST
+    16. Both sort comparators measured distance mid-sort, which Lua rejects with
+        "invalid order function for sorting" -- thrown inside task.spawn, that
+        kills the loop with no message.                -> measure, then sort
+    17. The list rebuilt fully on every egg spawn/despawn. -> debounced
+    18. List row distances were frozen at build time, so "Sort: Distance" went
+        stale as you moved.                            -> live refresh
+    19. The ESP refresh loop was gated on mainESPActive, so green per-egg labels
+        never updated their distance.
+    20. Hover tweens read their own in-flight value and drifted permanently.
+    21. The press animation tweened Size to its own value: dead code.
+    22. The row TP button ignored the AutoFarm / Teleport mode switch.
+    23. AutoFarm's final status message was unreachable when you pressed Stop.
+    24. CoreGui was fetched and never used.
+
+    STILL TRUE, BY DESIGN
+      * Config.MovementSpeed = 500 is roughly 30x walk speed and, combined with
+        noclip, remains the loudest anticheat signal in the file. Lower it if you
+        care more about looking plausible than about throughput.
+
+    ----------------------------------------------------------------------------
+    APPENDIX B  --  IDEAS FOR PRACTICE, EASIEST FIRST
+    ----------------------------------------------------------------------------
+    1. Change Config.BestEggName and watch Auto Best Egg target something else.
+    2. Lower Config.MovementSpeed to 80 and compare how the flight looks.
+    3. Set Config.UseProximityPrompt = false and see how much less reliable the
+       key-only path is -- that difference is finding 4 in Appendix A.
+    4. Raise Config.CollectConfirmTime and watch the "not confirmed" warnings
+       disappear on a laggy server.
+    5. Replace the device picker with automatic detection using
+       UserInputService.TouchEnabled.
+    6. Make collectEgg skip the trip home when the inventory is not full, and
+       measure how much faster a full pass gets.
+
+    ----------------------------------------------------------------------------
+    APPENDIX C  --  ROBLOX CONCEPTS THIS FILE TEACHES
+    ----------------------------------------------------------------------------
+    CFrame maths             Sections 11 and 13
+    Instance events          Section 25 (ChildAdded / ChildRemoved)
+    Coroutines               Sections 15, 16 and 16B (task.spawn / cancel / wait)
+    Frame-rate independence  Section 13 (Heartbeat delta time)
+    Generation counters      Sections 11 and 18 (pinToken, fxToken)
+    Layout-driven UI         Section 17 (UIListLayout, AutomaticSize, tokens)
+    Component builders       Section 17 (makeCard / makeToggle / makeSegmented)
+    Closures                 Section 20 (per-row button handlers)
+    Input handling           Sections 22 and 23 (drag, hotkeys, gameProcessed)
+    Tweening                 Section 8
+
+============================================================================ ]]
